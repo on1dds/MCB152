@@ -1,0 +1,1262 @@
+    IFNDEF  AT_SRC
+AT_SRC		EQU TRUE
+;**
+;**		$Filename: modem.src
+;**		$Release: 0
+;**		$Revision: 1
+;**		$Date: 12/02/2001
+;**		$Coding: Joachim Elen
+;**		
+;**
+;**		AT command interpreter
+;**
+
+			CPU	 8051
+
+			LISTING OFF
+			INCLUDE "as.inc"
+			INCLUDE "80c152.inc"
+			INCLUDE	"mcb152.inc"
+			INCLUDE "hardware.inc"
+			INCLUDE "macros.inc"
+			INCLUDE "malloc.src"
+			LISTING ON
+
+RC_OK           EQU 0
+RC_CONNECT      EQU 1
+RC_RING         EQU 2
+RC_NOCARRIER    EQU 3
+RC_ERROR        EQU 4
+RC_C1200        EQU 5
+RC_NOTONE       EQU 6
+RC_BUSY         EQU 7
+RC_NOANSWER     EQU 8
+RC_C2400        EQU 10
+RC_C4800        EQU 11
+RC_C9600        EQU 12
+RC_C14400       EQU 13
+RC_C19200       EQU 19
+RC_C21600       EQU 21
+RC_C24000       EQU 24
+RC_C26400       EQU 26
+RC_C28800       EQU 28
+RC_SYSTEMERROR  EQU 30
+RC_VOID         EQU 255
+
+
+AT_SBASE		EQU	00h					;offset of S registers in block
+AT_CMDLINE		EQU	80h					;offset of command line in block
+
+			SEGMENT DATA
+AT_s			db	?					;last s register established
+AT_data			db	?					;reserved memory block location
+AT_cpos			db	?					;cursor position in command line
+AT_char			db	?					;current char
+AT_entry		db	?					;entry in lookup table
+
+			SEGMENT BITDATA
+AT_OPEN			db  ?					;set if device is open
+AT_ENTERED		db	?
+AT_ONLINE		db	?					;set when online
+
+
+			SEGMENT CODE
+
+
+
+;-------------------------------------------------------------------------
+			PROC	at_open
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;-------------------------------------------------------------------------
+			push	ACC
+			jb		AT_OPEN,$$exit
+			mov		A,#1				;1 block (of 256 bytes)
+			call	mem_alloc
+			jc		$$err
+			mov		AT_data,DPH
+			call	z_command
+
+			mov		AT_cpos,#AT_CMDLINE
+			clr		AT_ENTERED
+			clr		AT_ONLINE
+
+$$exit:		clr		C
+$$err:		pop		ACC
+			ret
+
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	at_close
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;-------------------------------------------------------------------------
+			jnb		AT_OPEN,$$exit
+
+			clr		AT_OPEN
+			push	DPH
+			mov		DPH,AT_data
+			call	mem_free
+			pop		DPH
+
+$$exit		clr		C
+			ret
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	at_cli
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;command line interface
+;-------------------------------------------------------------------------
+read_char	call	lsc_read			;read char
+			mov		AT_char,A
+			jnc		echo
+			clr		C
+			ret
+
+echo		mov		DPH,AT_data
+			mov		DPL,#AT_SBASE+14
+			movx	A,@DPTR
+			jnb		ACC.1,check_ctrlx
+			mov		A,AT_char
+			call	lsc_write
+
+check_ctrlx	mov		A,AT_char
+			cjne	A,#CAN,check_repeat
+			mov		AT_cpos,#AT_CMDLINE+2
+			mov		DPH,AT_data
+			mov		DPL,#AT_CMDLINE
+			mov		R0,#128
+$$wis		clr		A
+			movx	@DPTR,A
+			inc		DPTR
+			djnz	R0,$$wis
+			jmp		at_process
+
+check_repeat
+			mov		A,AT_cpos
+			cjne	A,#AT_CMDLINE+1,check_bs
+
+			mov		DPH,AT_data
+			mov		DPL,#AT_CMDLINE
+			movx	A,@DPTR
+
+			mov		A,AT_char
+			cjne	A,#'/',$$chk_at
+			setb	AT_ENTERED
+			jmp		at_process			;process the AT command line
+
+$$chk_at	call	ucase
+			cjne	A,#'T',check_bs
+			setb	AT_ENTERED
+
+
+check_bs	mov		DPH,AT_data
+			mov		DPL,#AT_SBASE+5		;read S5
+			movx	A,@DPTR
+			call	at_check_ctrl
+			jc		check_cr
+			cjne	A,AT_char,check_cr
+
+			mov		A,AT_cpos
+			cje		A,#AT_CMDLINE+2,check_cr
+			dec		AT_cpos
+			jmp		done
+
+check_cr	mov		DPH,AT_data
+			mov		DPL,#AT_SBASE+3
+			movx	A,@DPTR
+			call	at_check_ctrl
+			jc		check_lf
+			cjne	A,AT_char,check_lf
+
+			mov		DPL,AT_cpos
+			clr		A
+			movx	@DPTR,A
+			jmp		at_process
+
+
+check_lf	mov		DPH,AT_data
+			mov		DPL,#AT_SBASE+4
+			movx	A,@DPTR
+			call	at_check_ctrl
+			jc		save_char
+			cjne	A,AT_char,save_char
+
+			mov		DPL,AT_cpos
+			clr		A
+			movx	@DPTR,A
+			jmp		at_process
+
+
+save_char	mov		A,AT_char
+			cjne	A,#' ',$$nspace
+			jmp		done
+
+$$nspace	mov		A,AT_cpos
+			cjne	A,#AT_CMDLINE+(80h-1),$$save
+			mov		AT_char,#0
+
+$$save		mov		DPH,AT_data
+			mov		DPL,AT_cpos
+			mov		A,AT_char
+			call	ucase
+
+			movx	@DPTR,A
+			inc		AT_cpos
+			jz		at_process
+
+done:		clr		C
+			ret
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	at_check_ctrl
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;process command line
+;-------------------------------------------------------------------------
+			cjne	A,#128,$$ab
+			clr		C
+$$ab		cpl		C
+			ret
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	at_write_crlf
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;print a newline 
+;-------------------------------------------------------------------------
+			pushm	PSW,ACC,DPH,DPL
+
+write_cr	mov		DPH,AT_data
+			mov		DPL,#AT_SBASE+3
+			movx	A,@DPTR
+			call	at_check_ctrl
+			jc		write_lf
+			call	lsc_write
+
+write_lf	mov		DPH,AT_data
+			mov		DPL,#AT_SBASE+4
+			movx	A,@DPTR
+			call	at_check_ctrl
+			jc		done
+			call	lsc_write
+
+done		popm	DPL,DPH,ACC,PSW
+			clr		C
+			ret
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	at_process
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;process command line
+;-------------------------------------------------------------------------
+
+;skip empty lines
+			mov		A,AT_cpos
+			cje		A,#AT_CMDLINE,done
+			jnb		AT_ENTERED,err
+			clr		AT_ENTERED
+
+ok			call	at_write_crlf
+
+			mov		AT_entry,#0
+			mov		AT_cpos,#AT_CMDLINE+2
+			call	execute
+
+done		mov		AT_cpos,#AT_CMDLINE		;current cursor position
+			clr		C
+			ret
+
+err			mov		A,#4
+			call	printrc
+			mov		AT_cpos,#AT_CMDLINE
+			setb	C
+			ret
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	execute
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;Compare current entry with command line
+;-------------------------------------------------------------------------
+			mov		AT_entry,#0
+
+;-------------------------------------------
+;check if the currently processed AT command
+;is predefined into the _atcmd command table
+;-------------------------------------------
+findcmd		mov		DPH,AT_data			;R0/R1= &(next cmd in AT line)
+			mov		DPL,AT_cpos
+			movx	A,@DPTR
+			clr		C
+			jz		done
+			mov		R0,DPL
+			mov		R1,DPH
+
+			push	B					;DPTR = &(next _atcmd pointer)
+			mov		DPH,#high(_atcmd)
+			mov		A,AT_entry
+			rl		A
+			mov		DPL,A
+			clr		A
+			movc	A,@A+DPTR
+			mov		B,A
+			push	ACC
+			inc		DPTR
+			clr		A
+			movc	A,@A+DPTR
+			mov		DPH,A
+			pop		DPL
+			orl		A,B
+			pop		B
+			jz		err					;warn if last item is reached
+
+			call	cmp_string			;compare the both
+			jnc		exec				;EQUAL !! ... execute this cmd...
+			inc		AT_entry			;select next _atcmd entry
+			jmp		findcmd				;repeat
+
+
+
+;-------------------------------------------
+;execute the code directly following the
+;predefined string constant
+;-------------------------------------------
+exec		mov		AT_cpos,R0			;save new position in AT cmd line
+
+$$skip		clr		A					;skip the strings
+			movc	A,@A+DPTR
+			inc		DPTR
+			cjne	A,#ETX,$$skip
+
+			pushret	retcode
+			clr		A
+			jmp		@A+DPTR
+
+done		mov		A,#RC_OK
+			call	printrc
+			clr		C
+			ret
+
+err			mov		A,#RC_ERROR
+			call	printrc
+			setb	C
+			ret	
+
+retcode		jc		err
+			jmp		execute
+
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	at_ungetchar
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;read one char from AT commandline
+;-------------------------------------------------------------------------
+			dec		AT_cpos
+			clr		C
+			ret
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	at_getchar
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;read one char from AT commandline
+;-------------------------------------------------------------------------
+			mov		DPH,AT_data
+			mov		DPL,AT_cpos
+			movx	A,@DPTR
+			mov		AT_char,A
+			inc		AT_cpos
+			jz		$$err
+$$done		clr		C
+			ret
+
+$$err		setb	C
+			ret
+
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	at_getnumber
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;read a decimal number from AT commandline
+;-------------------------------------------------------------------------
+			mov		R0,#0
+			mov		R1,#0
+			mov		DPH,AT_data			;get line command
+			mov		DPL,AT_cpos
+
+$$next:		movx	A,@DPTR
+			jz		$$done
+			call	ASCII2Dec
+			jc		$$done
+			call	AddDecDigit
+			jc		$$err
+			inc		DPTR
+			jmp		$$next
+
+$$done:		mov		AT_cpos,DPL
+			clr		C
+			ret
+
+$$err:		mov		AT_cpos,DPL
+			setb	C
+			ret
+
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	cmp_string
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;Compare two strings. Main string can be larger
+;
+;INPUT:         WR0		= main string in DATA memory
+;               DPTR	= substring in CODE memory
+;OUTPUT:        C=1		: strings are not equal
+;               C=0		: strings are equal
+;-------------------------------------------------------------------------
+			pushm	ACC,DPH,DPL,AR2
+		
+$$compare	clr		A
+			movc	A,@A+DPTR				;read cmpchar from main	string
+			clr		C
+			jz		$$done					;char2 = 0 ??? string equals!
+			mov		R2,A
+
+			mov		P2,R1					;load addressport with high	byte
+			movx	A,@R0					;read cmpchar from substring
+			jz		$$err
+
+			cjne	A,AR2,$$err				;error when	chars are not the same
+
+			inc		DPTR					;chars are the same,check next
+			inc		R0
+			sjmp	$$compare
+
+$$err		setb	C
+$$done		popm	AR2,DPL,DPH,ACC
+			ret
+
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	printrc
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;process command line
+;-------------------------------------------------------------------------
+			mov		B,A
+			mov		DPH,AT_data
+			mov		DPL,#AT_SBASE+14
+			movx	A,@DPTR
+			jb		ACC.2,done				;result codes are disabled
+			jb		ACC.3,verbose_mode		;check verbose mode
+
+terse_mode	mov		A,B
+			call	putdec
+			call	at_write_crlf
+			jmp		done
+
+verbose_mode
+			mov		A,B
+			mov		DPTR,#rc_codes
+			movc	A,@A+DPTR
+			mov		DPL,A
+			mov		DPH,#high(rc_text)
+
+			call	printc
+			call	at_write_crlf
+
+done		clr		C
+			ret
+
+
+			ENDP
+
+
+;------------------------------------------------------------------------------
+;			AT COMMAND LIST
+;------------------------------------------------------------------------------
+			align	256
+;******************************************************************************
+
+_atcmd
+			dw		cmd_at,cmd_b						;dummy commands
+			dw		cmd_c								;read source callsign
+			dw		cmd_dt,cmd_dp						;dial tone, dial pulse
+			dw		cmd_e								;*enable/disable echo
+			dw		cmd_f								;enable/*disable full duplex 
+			dw		cmd_i								;information
+			dw		cmd_l, cmd_m						;dummy commands
+			dw		cmd_q								;enable/disable result codes
+			dw		cmd_s								;read/write S registers
+			dw		cmd_v								;terse/verbose mode
+			dw		cmd_x, cmd_y						;dummy commands
+			dw		cmd_z								;reset modem profile
+
+			dw		cmd_naxhang,cmd_naxh				;idem tx tail
+			dw		cmd_naxdelay,cmd_naxd				;ax delay
+			dw		cmd_nc								;data carrier control
+			dw		cmd_nd								;DTR response behaviour
+			dw		cmd_nlcd,cmd_nl						;dummy commands
+			dw		cmd_npersist,cmd_np					;persistence
+			dw		cmd_nslottime,cmd_nslot				;slottime
+			dw		cmd_ntxdelay,cmd_ntxd				;tx delay
+			dw		cmd_ntxtail,cmd_ntxt				;tx tail
+			dw		cmd_ntu								;predefined time-units
+			dw		cmd_nt								;loopback tests
+			dw		cmd_nv								;view profile
+			dw		cmd_nu								;debug list heads
+
+			dw		cmd_equapo,cmd_equ					;poke register
+			dw		cmd_questapo,cmd_questl,cmd_quest	;peek register
+			dw		cmd_plusfclass						;modem service class
+
+			dw		0
+
+;-------------------------------------------------------------------------
+cmd_ntu		db		"&TU",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;predefined time-units
+;-------------------------------------------------------------------------
+			call	at_getnumber
+			jc		$$error
+
+			cjne	R1,#0,$$error			;error on rediculous values
+
+			mov		A,R0
+			anl		A,#00001111b
+			rl		A
+			rl		A
+
+			mov		DPH,#HI(tupresets)
+			mov		DPL,A
+
+			clr		A
+			movc	A,@A+DPTR
+			push	ACC
+			inc		DPTR
+			clr		A
+			movc	A,@A+DPTR
+			push	ACC
+			inc		DPTR
+			clr		A
+			movc	A,@A+DPTR
+			push	ACC
+			inc		DPTR
+			clr		A
+			movc	A,@A+DPTR
+			push	ACC
+			inc		DPTR
+
+			mov		DPH,AT_data
+			mov		DPL,#AT_SBASE+40
+
+			pop		ACC
+			movx	@DPTR,A
+			inc		DPTR
+			pop		ACC
+			movx	@DPTR,A
+			inc		DPTR
+			pop		ACC
+			movx	@DPTR,A
+			inc		DPTR
+			pop		ACC
+			movx	@DPTR,A
+			inc		DPTR
+	
+			clr		C
+			ret
+
+$$error		setb	C
+			ret
+
+			ALIGN		256
+			BIGENDIAN	ON
+tupresets	dw		100,(-XTAL/100)					;0
+			dw		1000,-XTAL/1000					;1
+			dw		10000,-XTAL/10000				;2
+
+			dw		20,(-XTAL/20)&0FFFFh			;3
+			dw		200,-XTAL/200					;4
+			dw		2000,-XTAL/2000					;5
+
+			dw		25,(-XTAL/25)&0FFFFh			;6
+			dw		250,-XTAL/250					;7
+			dw		2500,-XTAL/2500					;8
+
+			dw		33,(-XTAL/33)&0FFFFh			;9
+			dw		333,-XTAL/333					;10
+			dw		3333,-XTAL/3333					;11
+
+			dw		50,-XTAL/50						;12
+			dw		500,-XTAL/500					;13
+			dw		5000,-XTAL/5000					;14
+
+			dw		20000,-XTAL/20000				;15
+
+			BIGENDIAN	OFF
+
+
+;-------------------------------------------------------------------------
+cmd_nt		db		"&T",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;test commands, set flags for online loopback testing
+;-------------------------------------------------------------------------
+			mov		AT_s,#16
+			jmp		equ_command
+
+;-------------------------------------------------------------------------
+cmd_nd		db		"&D",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;set response behaviour
+;-------------------------------------------------------------------------
+			mov		AT_s,#17
+			jmp		equ_command
+
+;-------------------------------------------------------------------------
+cmd_nc		db		"&C",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;count number of buffered frames
+;-------------------------------------------------------------------------
+			call	at_getnumber
+			jc		$$error
+
+			;mov		A,GSC_tx_fcnt
+			;cje		R0,#0,$$print
+
+			;mov		A,GSC_rx_fcnt
+			;cje		R0,#1,$$print
+$$error		setb	C
+			ret
+	
+$$print		call	putdec
+			call	at_write_crlf
+			clr		C
+			ret
+
+
+;-------------------------------------------------------------------------
+cmd_c		db		"C",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;read source callsign
+;-------------------------------------------------------------------------
+$$find_eol	mov		DPH,AT_data
+			mov		DPL,AT_cpos
+			movx	A,@DPTR
+			jz		$$done
+			inc		AT_cpos
+			jmp		$$find_eol
+
+$$done		clr		C
+			ret
+
+;-------------------------------------------------------------------------
+cmd_dt		db		"DT",0
+cmd_dp		db		"DP",0
+cmd_atk		db		"@K",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;reset modem profile
+;-------------------------------------------------------------------------
+			clr		INT0
+			setb	AT_ONLINE
+
+			mov		A,#RC_CONNECT
+			call	printrc
+
+			pop		ACC
+			pop		ACC
+			ret
+
+;-------------------------------------------------------------------------
+cmd_plusfclass
+			db		"+FCLASS=?",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;modem service class
+;-------------------------------------------------------------------------
+			mov		DPTR,#txt_class
+			call	printc
+			call	at_write_crlf
+			clr		C
+			ret
+
+txt_class	db		"0,0,0,1.0",0
+
+
+;-------------------------------------------------------------------------
+cmd_naxhang	db		"&AXHANG",0
+cmd_naxh	db		"&AXH",0
+cmd_ntxtail	db		"&TXTAIL",0
+cmd_ntxt	db		"&TXT",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;repeater hang timer (also tx tail)
+;-------------------------------------------------------------------------
+			mov		AT_s,#100
+			clr		C
+			ret
+
+;-------------------------------------------------------------------------
+cmd_npriack	db		"&PRIACK",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;priority window timer
+;-------------------------------------------------------------------------
+			mov		AT_s,#101
+			clr		C
+			ret
+
+;-------------------------------------------------------------------------
+cmd_nslottime	db	"&SLOTTIME",0
+cmd_nslot		db	"&SLOT",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;reset modem profile
+;-------------------------------------------------------------------------
+			mov		AT_s,#102
+			clr		C
+			ret
+
+
+;-------------------------------------------------------------------------
+cmd_ntxdelay	db		"&TXDELAY",0
+cmd_ntxd		db		"&TXD",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;reset modem profile
+;-------------------------------------------------------------------------
+			mov		AT_s,#103
+			clr		C
+			ret
+
+;-------------------------------------------------------------------------
+cmd_naxdelay	db		"&AXDELAY",0
+cmd_naxd		db		"&AXD",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;reset modem profile
+;-------------------------------------------------------------------------
+			mov		AT_s,#104
+			clr		C
+			ret
+
+;-------------------------------------------------------------------------
+cmd_npersist	db		"&PERSIST",0
+cmd_np			db		"&P",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;reset modem profile
+;-------------------------------------------------------------------------
+			mov		AT_s,#120
+			clr		C
+			ret
+
+
+
+;-------------------------------------------------------------------------
+cmd_z		db		"Z",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;reset modem profile
+;-------------------------------------------------------------------------
+z_command
+
+;init S-registers
+			mov		DPTR,#sdefault
+			mov		R0,#AT_SBASE
+
+$$fill		clr		A
+			movc	A,@A+DPTR
+			mov		P2,AT_data
+			movx	@R0,A
+			inc		DPTR
+			inc		R0
+			cjne	R0,#0,$$fill
+
+;init registers
+			mov		AT_s,#0
+
+			clr		C
+			ret
+
+
+sdefault	INCLUDE	"include/sreg.inc"
+
+
+;-------------------------------------------------------------------------
+cmd_nu		db		"&U",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;debug 
+;-------------------------------------------------------------------------
+			call	at_getnumber
+			jnc		$$start
+
+			mov		A,#RC_ERROR
+			ret
+
+;print S-registers
+$$start		mov		DPH,MSG_base
+			mov		DPL,#0
+			mov		R1,#0
+
+$$luske1	mov		A,#'*'
+			call	lsc_write
+			mov		A,DPL
+			call	puthex
+			mov		A,#':'
+			call	lsc_write
+			mov		A,#' '
+			call	lsc_write
+			mov		R2,#16
+
+$$luske2	movx	A,@DPTR
+			call	puthex
+			djnz	R1,$$aa1
+			jmp		$$done
+
+$$aa1		mov		A,#' '
+			cjne	R2,#9,$$write
+			mov		A,#'-'
+$$write		call	lsc_write
+			inc		DPL
+			djnz	R2,$$luske2
+			call	at_write_crlf
+			jmp		$$luske1
+			
+$$done		call	at_write_crlf
+			clr		C
+			ret
+
+;-------------------------------------------------------------------------
+cmd_nv		db		"&V",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;set/read register value
+;-------------------------------------------------------------------------
+			call	at_getnumber
+			jnc		i_profile
+
+			mov		A,#RC_ERROR
+			ret
+
+i_profile	mov		DPTR,#txt_profile
+			call	printc
+			call	at_write_crlf
+
+			mov		DPH,AT_data
+			mov		DPL,#AT_SBASE+14
+			movx	A,@DPTR
+			mov		B,A
+
+			mov		A,#'E'				;write ECHO status
+			call	lsc_write
+			mov		A,#'0'
+			mov		C,B.1
+			addc	A,#0
+			call	lsc_write
+
+			mov		A,#' '				;write QUIET status
+			call	lsc_write
+			mov		A,#'Q'
+			call	lsc_write
+			mov		A,#'0'
+			mov		C,B.2
+			addc	A,#0
+			call	lsc_write
+
+			mov		A,#' '				;write VERBOSE status
+			call	lsc_write
+			mov		A,#'V'
+			call	lsc_write
+			mov		A,#'0'
+			mov		C,B.3
+			addc	A,#0
+			call	lsc_write
+
+			call	at_write_crlf
+
+;print S-registers
+			mov		DPH,AT_data
+			mov		DPL,#AT_SBASE
+
+			mov		R1,#128
+
+$$luske1	mov		A,#'S'
+			call	lsc_write
+			mov		A,DPL
+			call	putdec
+			mov		A,#':'
+			call	lsc_write
+			mov		A,#' '
+			call	lsc_write
+			mov		R2,#10
+
+$$luske2	movx	A,@DPTR
+			call	putdec
+			djnz	R1,$$aa1
+			jmp		$$done
+
+$$aa1		mov		A,#' '
+			cjne	R2,#6,$$write
+			mov		A,#'-'
+$$write		call	lsc_write
+			inc		DPL
+			djnz	R2,$$luske2
+			call	at_write_crlf
+			jmp		$$luske1
+			
+$$done		call	at_write_crlf
+			clr		C
+			ret
+
+txt_profile	db		"ACTIVE PROFILE:",0
+
+
+;-------------------------------------------------------------------------
+cmd_i		db		"I",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;set/read register value
+;-------------------------------------------------------------------------
+			call	at_getnumber
+			jnc		i_msg
+
+			mov		A,#RC_ERROR
+			ret
+
+i_msg		mov		DPTR,#txt_prodcode
+			cje		R0,#0,i_print
+
+			mov		DPTR,#txt_romsum
+			cje		R0,#1,i_print
+			cje		R0,#2,i_print
+			
+			mov		DPTR,#txt_version
+			cje		R0,#3,i_print
+
+			mov		DPTR,#txt_codedate
+			cje		R0,#4,i_print
+
+			mov		DPTR,#txt_target
+			cje		R0,#5,i_print
+
+			mov		DPTR,#txt_clkspeed
+			cje		R0,#6,i_print
+			
+			mov		DPTR,#txt_modemtype
+			cje		R0,#7,i_print
+			
+			mov		DPTR,#txt_coder
+			cje		R0,#8,i_print
+
+			setb	C
+			ret
+
+i_print		call	printc
+i_done		call	at_write_crlf
+			clr		C
+			ret
+					OUTRADIX	10
+txt_prodcode		db	NAME,0
+txt_romsum			db	"FFFF",0
+txt_version			db	VER,0
+txt_codedate		db	"Rev. \{DATE} \{TIME}",0
+txt_target			db	"MCB152",0
+txt_clkspeed		db	"\{XTAL*12}",0
+txt_modemtype		db  "Baycom USCC simplex modem",0
+txt_coder			db	"ON1DDS - Joachim Elen",0
+
+
+;-------------------------------------------------------------------------
+cmd_equapo	db		"=\H",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;poke the last established S register to value
+;-------------------------------------------------------------------------
+			call	at_getchar
+			mov		R0,A
+
+			call	at_getchar
+			cjne	A,#39,$$err
+
+			mov		DPH,AT_data
+			mov		DPL,AT_s
+			mov		A,R0
+			movx	@DPTR,A
+
+			clr		C
+			ret
+
+$$err		setb	C
+			ret
+
+
+;-------------------------------------------------------------------------
+cmd_equ		db		"=",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;poke the last established S register to value
+;-------------------------------------------------------------------------
+equ_command
+			mov		DPH,AT_data			;get line command
+			mov		DPL,AT_cpos
+			movx	A,@DPTR
+			cjne	A,#'?',$$a
+			inc		AT_cpos
+			jmp		s_peek
+
+$$a			call	at_getnumber
+			jc		$$err
+
+			mov		DPH,AT_data
+			mov		DPL,AT_s
+			mov		A,R0
+			movx	@DPTR,A				
+
+			mov		A,R1
+			jz		$$done
+			inc		DPTR
+			movx	@DPTR,A
+
+$$done		clr		C
+$$err		ret
+
+
+;-------------------------------------------------------------------------
+cmd_questl	db		"??",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;peek the last established S register to value
+;-------------------------------------------------------------------------
+$$s_peek	pushm	DPH,DPL,ACC,B
+			mov		DPH,AT_data
+			mov		DPL,AT_s
+			movx	A,@DPTR
+			mov		R0,A
+			inc		DPTR
+			movx	A,@DPTR
+			mov		R1,A
+			call	putdec16
+			call	at_write_crlf
+			popm	B,ACC,DPL,DPH
+			clr		C
+			ret
+
+
+;-------------------------------------------------------------------------
+cmd_questapo	db		"?\H",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;peek the last established S register to value
+;-------------------------------------------------------------------------
+$$s_peek	mov		DPH,AT_data
+			mov		DPL,AT_s
+			movx	A,@DPTR
+			call	lsc_write
+			call	at_write_crlf
+			clr		C
+			ret
+
+;-------------------------------------------------------------------------
+cmd_quest	db		"?",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;peek the last established S register to value
+;-------------------------------------------------------------------------
+s_peek		mov		DPH,AT_data
+			mov		DPL,AT_s
+			movx	A,@DPTR
+			call	putdec
+			call	at_write_crlf
+			clr		C
+			ret
+;-------------------------------------------------------------------------
+cmd_s		db		"S",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;set/read register value
+;-------------------------------------------------------------------------
+			call	at_getnumber
+			jc		$$err
+
+			setb	C
+			mov		A,R1
+			jnz		$$err
+
+			mov		A,R0
+			clr		ACC.7
+			mov		AT_s,A
+			
+$$done		clr		C
+$$err		ret
+
+
+
+;-------------------------------------------------------------------------
+cmd_v		db		"V",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;terse/verbose result code format
+;-------------------------------------------------------------------------
+			pushm	B,AR0,AR1
+			call	at_getnumber		;read flag
+			jc		$$err
+	
+			mov		DPH,AT_data			;read current verbose settings
+			mov		DPL,#AT_SBASE+14
+			movx	A,@DPTR
+
+			cjne	R0,#0,$$set			;adjust to user request
+			clr		ACC.3
+			jmp		$$write
+$$set		setb	ACC.3
+$$write		movx	@DPTR,A
+
+$$done		clr		C
+$$err		popm	AR1,AR0,B
+			ret
+
+;-------------------------------------------------------------------------
+cmd_e		db		"E",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;echo command mode characters
+;-------------------------------------------------------------------------
+			pushm	B,AR0,AR1
+			call	at_getnumber		;read flag
+			jc		$$err
+	
+			mov		DPH,AT_data			;read current echo settings
+			mov		DPL,#AT_SBASE+14
+			movx	A,@DPTR
+
+			cjne	R0,#0,$$set			;adjust to user request
+			clr		ACC.1
+			jmp		$$write
+$$set		setb	ACC.1
+$$write		movx	@DPTR,A
+
+$$done		clr		C
+$$err		popm	AR1,AR0,B
+			ret
+
+;-------------------------------------------------------------------------
+cmd_f		db		"F",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;echo command mode characters
+;-------------------------------------------------------------------------
+			pushm	B,AR0,AR1
+			call	at_getnumber		;read flag
+			jc		$$err
+	
+			mov		DPH,AT_data			;read current echo settings
+			mov		DPL,#AT_SBASE+15
+			movx	A,@DPTR
+
+$$a00		cjne	R0,#0,$$a01			;adjust to user request
+			clr		ACC.0
+			clr		ACC.1
+			jmp		$$write
+
+$$a01		cjne	R0,#1,$$a02
+			setb	ACC.0
+			clr		ACC.1
+			jmp		$$write
+
+$$a02		cjne	R0,#2,$$err
+			setb	ACC.0
+			setb	ACC.1
+
+$$write		movx	@DPTR,A
+
+$$done		mov		A,#RC_OK
+			clr		C
+			popm	AR1,AR0,B
+			ret
+
+$$err		mov		A,#RC_ERROR
+			setb	C
+			popm	AR1,AR0,B
+			ret
+
+
+;-------------------------------------------------------------------------
+cmd_q		db		"Q",0,ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;enable/disable result codes
+;-------------------------------------------------------------------------
+			pushm	B,AR0,AR1
+			call	at_getnumber		;read flag
+			jc		$$err
+	
+			mov		DPH,AT_data			;read current result code settings
+			mov		DPL,#AT_SBASE+14
+			movx	A,@DPTR
+
+			cjne	R0,#0,$$set			;adjust to user request
+			clr		ACC.2
+			jmp		$$write
+$$set		setb	ACC.2
+$$write		movx	@DPTR,A
+
+$$done		clr		C
+$$err		popm	AR1,AR0,B
+			ret
+
+
+;-------------------------------------------------------------------------
+cmd_at		db		"AT",0				;for whoever uses AT inside the line
+cmd_b		db		"B",0				;communication standard setting
+cmd_l		db		"L",0				;set speaker volume
+cmd_m		db		"M",0				;set speaker mode
+cmd_x		db		"X",0				;result code for call progress
+cmd_y		db		"Y",0				;long space disconnect
+cmd_dr		db		"DR",0				;
+cmd_nl		db		"&L",0
+cmd_nlcd	db		"&LCD",0			;lcd handler
+			db		ETX
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;unimplemented dummy commands
+;-------------------------------------------------------------------------
+			call	at_getnumber		;read flag
+			ret
+
+rc_codes	db		low(txt_ok)				;00
+			db		low(txt_connect)		;01
+			db		low(txt_ring)			;02
+			db		low(txt_no_carrier)		;03
+			db		low(txt_error)			;04
+			db		low(txt_connect1200)	;05
+			db		low(txt_no_dialtone)	;06
+			db		low(txt_busy)			;07
+			db		low(txt_no_answer)		;08
+			db		low(txt_connect)		;09
+			db		low(txt_connect)		;10
+			db		low(txt_connect)		;11
+			db		low(txt_connect)		;12
+			db		low(txt_connect)		;13
+			db		low(txt_connect)		;14
+			db		low(txt_connect)		;15
+			db		low(txt_connect)		;16
+			db		low(txt_connect)		;17
+			db		low(txt_connect)		;18
+			db		low(txt_connect)		;19
+			db		low(txt_connect)		;20
+			db		low(txt_connect)		;21
+			db		low(txt_connect)		;22
+			db		low(txt_connect)		;23
+			db		low(txt_connect)		;24
+			db		low(txt_connect)		;25
+			db		low(txt_connect)		;26
+
+
+			db		0
+
+
+
+
+
+
+
+			align	256
+rc_text
+txt_ok				db		"OK",0
+txt_connect			db		"CONNECT",0
+txt_ring			db		"RING",0
+txt_no_carrier		db		"NO CARRIER",0
+txt_error			db		"ERROR",0
+txt_connect1200		db		"CONNECT 1200",0
+txt_no_dialtone		db		"NO DIALTONE",0
+txt_busy			db		"BUSY",0
+txt_no_answer		db		"NO ANSWER",0
+
+		ENDIF

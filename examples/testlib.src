@@ -1,0 +1,35 @@
+;==========================================================
+;PROJECT: test PWM lib
+;DATE   : 08 august 1998
+;==========================================================
+
+        $MOD152
+        $INCLUDE(X:MCB152.INC)
+        $INCLUDE(..\pwm\include\pwm.inc)
+
+
+        CSEG
+        SETCODE Start,0100h
+        SETINT  RESET,Start
+
+        ORG     Start
+
+        libexists PWMbase
+        jc      nokick
+        mov     DPTR,#txt_kick
+        call    PutMessage
+
+        libver  PWMbase        ;get library version
+        call    PutDec8
+
+        mov     A,#'.'
+        call    PutChar
+
+        librev  PWMbase
+        call    PutDec8
+
+nokick: ret
+
+
+txt_kick:      db 'Found PWM library v',0
+        END

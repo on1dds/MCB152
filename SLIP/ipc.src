@@ -1,0 +1,380 @@
+	IFNDEF  IPC_SRC
+IPC_SRC     EQU TRUE
+;**
+;**     $Filename: ipc.src
+;**     $Release: 0
+;**     $Revision: 0
+;**     $Date: 20/07/2000
+;**     $Coding: Joachim Elen
+;**     
+;**
+;**     Inter Process Communication system
+;**		Message Queues
+;**
+
+			CPU     8051
+
+			LISTING OFF
+			INCLUDE "as.inc"
+			INCLUDE "ascii.inc"			;assign ASCII character names
+			INCLUDE "malloc.src"
+			LISTING ON
+
+IPC			STRUCT
+head		db  ?		;*queue head
+tail		db  ?		;*queue tail
+IPC			ENDSTRUCT
+
+MSG			STRUCT
+next		db	?		;*next message
+type		db	?		;type of message
+size		db	?,?		;message size
+MSG			ENDSTRUCT
+
+			SEGMENT DATA
+IPC_base	db  ?
+MSG_base	db	?
+
+			SEGMENT BITDATA
+IPC_OPEN	db	?
+
+
+			SEGMENT CODE
+
+;-------------------------------------------------------------------------
+            PROC    ipc_open
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;create environment for message queues.
+;Do this only once, during initialisation of the program
+;-------------------------------------------------------------------------
+			jb		IPC_OPEN,open_error
+
+			mov		A,#IPC_len					;allocate memory for queue headers
+			call	mem_alloc
+			jc		open_error
+			mov		IPC_base,DPH
+
+			mov		DPL,#0						;clear all queues
+			mov		A,IPC_base
+			add		A,#IPC_len
+			mov		R0,A
+$$cl1		clr		A
+			movx	@DPTR,A
+			inc		DPTR
+			mov		A,R0
+			cjne	A,DPH,$$cl1
+
+			mov		A,#MSG_len					;allocate memory for message headers
+			call	mem_alloc
+			jc		open_error
+			mov		MSG_base,DPH
+
+			mov		DPL,#0						;clear all queues
+			mov		A,MSG_base
+			add		A,#MSG_len
+			mov		R0,A
+$$cl2		clr		A
+			movx	@DPTR,A
+			inc		DPTR
+			mov		A,R0
+			cjne	A,DPH,$$cl2
+
+			clr		C
+			ret
+
+open_error	setb	C
+			ret
+			ENDP
+
+;-------------------------------------------------------------------------
+            PROC    ipc_close
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;close environment of message queues.
+;beware with this.  every message has at least one 256 byte page appended
+;on it, which is reserved memory. this function is not responsible for
+;freeing the memory allocated by the original owner of the message
+;the memory will end up in an unused, floating status.
+;-------------------------------------------------------------------------
+			jnb		IPC_OPEN,close_error
+			mov		DPH,MSG_base
+			call	mem_free
+			mov		DPH,IPC_base
+			call	mem_free
+			jc		close_error
+			clr		C
+			ret
+
+close_error	setb	C
+			ret
+			ENDP
+
+;-------------------------------------------------------------------------
+            PROC    msgsnd
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;append a message to a message queue
+;INPUT:
+;			ACC		msg_qid				message queue identifier
+;			B		msg_type			message type
+;			DPH		*msg_ptr			message pointer
+;			R0/R1	msg_sz				message size (in bytes) [H/L]
+;-------------------------------------------------------------------------
+			;call	msgsnd_debug
+
+			mov		R3,A				;R3 = msg_qid
+			mov		R2,DPH				;R2 = msg_ptr
+
+;message header invullen
+;-----------------------
+			mov		DPL,R2
+			mov		DPH,MSG_base
+
+			clr		A					;msg->next = NULL
+			movx	@DPTR,A
+
+			inc		DPH					;msg->type = msg_type
+			mov		A,B
+			movx	@DPTR,A
+
+			inc		DPH					;msg->size = msg_size
+			mov		A,R0
+			movx	@DPTR,A
+			inc		DPH
+			mov		A,R1
+			movx	@DPTR,A
+
+;append message to queue
+;-----------------------
+			mov		DPL,R3				;if (MSG_head==NULL){
+			mov		DPH,IPC_base
+			movx	A,@DPTR
+			jnz		$$reg
+
+			mov		A,R2					;MSG_head = *msg_ptr
+			movx	@DPTR,A
+			inc		DPH						;MSG_tail = *msg_ptr
+			movx	@DPTR,A
+			jmp		msgsnd_done			;}
+
+$$reg		inc		DPH					;elseif{
+			movx	A,@DPTR					;R0 = MSG_tail		(contains former tail message)
+			mov		R0,A
+			mov		A,R2					;MSG_tail = *msg_ptr
+			movx	@DPTR,A
+
+			mov		DPL,R0					;R0->next = *msg_ptr
+			mov		DPH,MSG_base
+			mov		A,R2
+			movx	@DPTR,A				;}
+
+msgsnd_done	clr		C					;return(0);
+			ret
+
+			ENDP
+
+;-------------------------------------------------------------------------
+            PROC    msgrcv
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;read a message from a message queue
+;INPUT:
+;			ACC		msg_qid				message queue identifier
+;
+;OUTPUT:
+;			ACC		msg_qid				message queue identifier
+;			B		msg_type			message type
+;			DPH		*msg_ptr			message pointer
+;			R0/R1	msg_sz				message size (in bytes) [H/L]
+;-------------------------------------------------------------------------
+			mov		R3,A				;R3 = msg_qid
+
+			mov		DPH,IPC_base		;if (ipc_head!=NULL){
+			mov		DPL,A
+			movx	A,@DPTR
+			jz		msgrcv_error
+
+            mov     R2,A					;R2 = msg_ptr
+
+;remove node from list
+			mov		DPH,MSG_base			;A = R2->msg_next
+			mov		DPL,R2
+			movx	A,@DPTR
+
+			mov		DPH,IPC_base			;ipc_head = R2->msg_next
+			mov		DPL,R3
+			movx	@DPTR,A
+			jnz		get_frame_data
+
+last_msg	inc		DPH						;ipc_tail = R2->msg_next
+			movx	@DPTR,A
+
+;get framesize
+get_frame_data
+			mov		DPH,MSG_base
+			mov		DPL,R2
+
+			inc		DPH						;B = msg_type
+			movx	A,@DPTR
+			mov		B,A
+
+			inc		DPH						;R0/R1 = msg_size
+			movx	A,@DPTR
+			mov		R0,A
+			inc		DPH
+			movx	A,@DPTR
+			mov		R1,A
+
+			mov		DPH,DPL					;DPH = *msg_ptr
+			mov		A,R3
+
+			;call	msgrcv_debug
+
+			clr		C
+			ret
+
+msgrcv_error
+			setb	C
+			ret
+			ENDP
+
+			
+
+;-------------------------------------------------------------------------
+            PROC    msgchk
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;check for messages on queue
+;INPUT:
+;			ACC		msg_qid				message queue identifier
+;
+;OUTPUT:
+;			C							queue empty identifier
+;-------------------------------------------------------------------------
+			pushm	DPH,DPL,B
+			mov		DPH,IPC_base		;if (ipc_head!=NULL){
+			mov		DPL,A
+			movx	A,@DPTR
+			jz		msgchk_err
+
+			mov		B,#0
+
+$$count		inc		B
+			mov		DPH,MSG_base			;A = R2->msg_next
+			mov		DPL,A
+			movx	A,@DPTR
+			jnz		$$count
+			mov		A,B
+			
+msgchk_done	popm	B,DPL,DPH
+			clr		C
+			ret
+
+msgchk_err	mov		A,#0
+			popm	B,DPL,DPH
+			setb	C
+			ret
+			ENDP
+
+
+;-------------------------------------------------------------------------
+            PROC    msgsnd_debug
+;-------------------------------------------------------------------------
+;show on the LCD display
+;			ACC		msg_qid				message queue identifier
+;			B		msg_type			message type
+;			DPH		*msg_ptr			message pointer
+;			R0/R1	msg_sz				message size (in bytes) [H/L]
+;-------------------------------------------------------------------------
+			pushm	ACC,B,DPH,AR0,AR1
+			push	ACC
+			mov		A,#LCD_R0
+			call	lcd_setpos
+			pop		ACC
+
+			call	lcd_puthex8			;ACC
+			mov		A,#SPACE
+			call	lcd_write
+
+			mov		A,B
+			call	lcd_puthex8			;B
+			mov		A,#SPACE
+			call	lcd_write
+		
+			mov		A,DPH
+			call	lcd_puthex8			;DPH
+			mov		A,#SPACE
+			call	lcd_write
+
+			mov		A,R0
+			call	lcd_puthex8			;AR0
+			mov		A,#SPACE
+			call	lcd_write
+			
+			mov		A,R1
+			call	lcd_puthex8			;AR1
+			mov		A,#SPACE
+			call	lcd_write
+
+
+			mov		A,#LCD_R3
+			call	lcd_setpos
+			mov		DPL,#0
+			mov		R0,#18
+			popm	AR1,AR0,DPH,B,ACC
+			ret
+
+			ENDP
+
+;-------------------------------------------------------------------------
+            PROC    msgrcv_debug
+;-------------------------------------------------------------------------
+;show on the LCD display
+;			ACC		msg_qid				message queue identifier
+;			B		msg_type			message type
+;			DPH		*msg_ptr			message pointer
+;			R0/R1	msg_sz				message size (in bytes) [H/L]
+;-------------------------------------------------------------------------
+			pushm	ACC,B,DPH,AR0,AR1
+			push	ACC
+			mov		A,#LCD_R1
+			call	lcd_setpos
+			pop		ACC
+
+			call	lcd_puthex8			;ACC
+			mov		A,#SPACE
+			call	lcd_write
+
+			mov		A,B
+			call	lcd_puthex8			;B
+			mov		A,#SPACE
+			call	lcd_write
+		
+			mov		A,DPH
+			call	lcd_puthex8			;DPH
+			mov		A,#SPACE
+			call	lcd_write
+
+			mov		A,R0
+			call	lcd_puthex8			;AR0
+			mov		A,#SPACE
+			call	lcd_write
+			
+			mov		A,R1
+			call	lcd_puthex8			;AR1
+			mov		A,#SPACE
+			call	lcd_write
+
+
+			mov		A,#LCD_R3
+			call	lcd_setpos
+			mov		DPL,#0
+			mov		R0,#18
+
+$$luske		movx	A,@DPTR
+			call	lcd_write
+			inc		DPTR
+			djnz	R0,$$luske
+
+			popm	AR1,AR0,DPH,B,ACC
+			ret
+			ENDP
+
+			include	"lcd.src"
+    ENDIF

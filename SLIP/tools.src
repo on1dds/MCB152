@@ -1,0 +1,192 @@
+    IFNDEF  TOOLS_SRC
+TOOLS_SRC     EQU TRUE
+;**
+;**     $Filename: template.src
+;**     $Release: 0
+;**     $Revision: 0
+;**     $Date: 00/00/2000
+;**     $Coding: Joachim Elen
+;**     
+;**
+;**     Tools
+;**
+
+			CPU     8051
+
+
+
+;-------------------------------------------------------------------------
+			PROC	printx
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;print string from code memory
+;-------------------------------------------------------------------------
+			movx	A,@DPTR
+			jz		$$done
+			call	lsc_write
+			inc		DPTR
+			jmp		printx      
+$$done		clr		C
+			ret
+
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	printc
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;print string from code memory
+;-------------------------------------------------------------------------
+			clr		A
+			movc	A,@A+DPTR
+			jz		$$done
+			call	lsc_write
+			inc		DPTR
+			jmp		printc
+$$done		clr		C
+			ret
+
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	ucase
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;command line interface
+;-------------------------------------------------------------------------
+			cjae	A,#'z'+1,done
+			cjb		A,#'a',done
+
+			subb	A,#20h
+done		clr		C
+			ret
+			ENDP
+
+
+PutHex4b:
+;==========================================================
+;hex-write 4 low-bits of parameter
+;==========================================================
+;INPUT:         A[3-0]  = lownibble to hex-write
+;----------------------------------------------------------
+        push    ACC
+        call    Hex2ASCII
+        call    lsc_write
+        pop     ACC
+        clr     C
+        ret
+
+puthex:
+;==========================================================
+;hex-write 8 bits
+;==========================================================
+;INPUT:         A = byte to hex-write
+;----------------------------------------------------------
+		swap    A
+        call    PutHex4b
+        swap    A
+        call    PutHex4b
+        clr     C
+        ret
+
+
+
+;-------------------------------------------------------------------------
+			PROC	putdec16
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;print string from code memory
+;-------------------------------------------------------------------------
+			push	B
+			call	pd_d10
+			mov		A,DPL
+			orl		A,DPH
+			jz		pd_done
+			mov		R0,DPL
+			mov		R1,DPH
+			call	putdec16
+pd_done:	mov		A,B
+			add		A,#'0'
+			call	lsc_write
+			pop		B
+			ret
+pd_d10:		mov		DPTR,#0
+pd_chk:		mov		A,AR1
+			cjne	A,#HIGH(10),$+8
+			mov		A,AR0
+			cjne	A,#LOW(10),$+3
+			jnc		pd_sub
+			mov		B,R0
+			ret
+pd_sub:		clr		C
+			mov		A,R0
+			subb	A,#10
+			mov		R0,A
+			mov		A,R1
+			subb	A,#0
+			mov		R1,A
+			inc		DPTR
+			sjmp	pd_chk
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	lcd_putdec
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;print string from code memory
+;-------------------------------------------------------------------------
+			pushm	ACC,B
+			mov		B,#100
+			div		AB
+			add		A,#'0'
+			call	lcd_write
+			mov		A,B
+
+			mov		B,#10
+			div		AB
+			add		A,#'0'
+			call	lcd_write
+			mov		A,B
+
+			add		A,#'0'
+			call	lcd_write
+			popm	B,ACC
+			clr		C
+			ret
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	putdec
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;print string from code memory
+;-------------------------------------------------------------------------
+			pushm	ACC,B
+			mov		B,#100
+			div		AB
+			add		A,#'0'
+			call	lsc_write
+			mov		A,B
+
+			mov		B,#10
+			div		AB
+			add		A,#'0'
+			call	lsc_write
+			mov		A,B
+
+			add		A,#'0'
+			call	lsc_write
+			popm	B,ACC
+			clr		C
+			ret
+			ENDP
+		
+
+
+
+
+
+	ENDIF
+
+
+
+
+
+
+

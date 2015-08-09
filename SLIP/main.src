@@ -1,0 +1,523 @@
+;==========================================================
+;PROJECT: MCB152
+;
+;==========================================================
+
+			CPU		 8051
+			BIGENDIAN	OFF
+
+
+;--- read includes
+
+			LISTING	OFF
+			INCLUDE	"as.inc"
+			INCLUDE	"80c152.inc"
+			INCLUDE	"mcb152.inc"
+			LISTING	ON
+
+
+;--- set constants
+
+DEBUG		EQU	TRUE
+NAME		EQU "SLIP-AX25"					;firmware name
+VER			EQU	"Ver. 1.00pre"				;firmware version
+;XTAL		EQU	11059200/12					;normal duration of 1 instruction cycle
+XTAL		EQU	14745600/12					;boosted duration of 1 cycle
+;LSC_SPEED	EQU	LSC_X460800
+;LSC_SPEED	EQU	LSC_X230400
+LSC_SPEED	EQU	LSC_AUTO
+ 
+TI_SECONDH		EQU	01Eh
+TI_SECONDL		EQU	01Fh
+
+			SEGMENT DATA
+
+DEBUG_01			db	?
+
+			SEGMENT BITDATA
+;TI_SECOND_EXPIRY	db  ?					;set if device is open
+MM_ONLINE			db	?
+
+;--- set vectors
+			SEGMENT	CODE
+
+			SETINT	RESET,	0100h						;coldreboot handler
+			SETINT	SINT,	lsc_sint
+			SETINT	GSCRV,	gsc_rx_valid				;rx valid handler
+			SETINT	GSCRE,	gsc_rx_error				;rx frameerror
+			SETINT	GSCTV,	gsc_tx_valid				;rx valid handler
+			SETINT	GSCTE,	gsc_tx_error				;rx frameerror
+			SETINT	TIMER0,	timer_int
+
+
+;==========================================================
+;***						   ****************************
+;***   program code			  *****************************
+;***						   ****************************
+;========================================================== 
+
+			ORG	 0100h
+
+;boot initialisations
+;====================
+
+;init mcu
+			mov		SP,#80h				;init stack
+			clr		EA					;init interrupts
+			clr		A
+			mov		IPN1,A
+			mov		IEN1,A
+			mov		IE,A
+
+;init memory
+			mov		R0,#0				;clear on-chip memory
+$$clr:		mov		@R0,A
+			djnz	R0,$$clr
+			call	mem_init			;init memory management
+			jc		$$err
+
+
+;init message queues
+			clr		IPC_OPEN
+			call	ipc_open
+
+;device setup
+;============
+
+;debug
+
+
+;open display driver
+			call	lcd_open
+
+;open command interpreter
+			call	at_open				;open command interpreter
+			jc		$$err
+			clr		AT_ONLINE
+			clr		MM_ONLINE
+
+;open serial port
+			mov		DPH,AT_data			;read predefined baudrate
+			mov		DPL,#AT_SBASE+31
+			movx	A,@DPTR
+			call	lsc_open
+			jc		$$err
+
+;open remote serial port
+			mov		DPH,AT_data			;read max framesize
+			mov		DPL,#AT_SBASE+49
+			movx	A,@DPTR
+			call	mem_qfill
+
+			call	gsc_open
+			jc		$$err
+			setb	INT0
+
+;start timer device
+			call	timer_start
+			jmp		main
+
+;handle fatal error
+$$err:		mov		P4,#011000000b
+			mov		A,#30 
+			call	Delay
+			mov		P4,#011111111b
+			mov		A,#30
+			call	Delay
+			jmp		$$err
+
+;=========================================
+;MAIN ROUTINE
+;=========================================
+main		call	timer_process
+
+
+;show debug data on display
+;--------------------------
+DEBUGMODE = 1
+
+	IFDEF	DEBUGMODE
+			inc		DEBUG_01
+			mov		A,DEBUG_01
+			jnb		ACC.5,$$ljmp
+			mov		DEBUG_01,#0
+			jmp		$$db1
+
+$$ljmp		jmp		db_nodebug
+$$db1
+
+$$a
+;show physical state
+			mov		A,#LCD_R0
+			call	lcd_setpos
+			mov		DPTR,#lcdtxt_phstate
+			call	lcd_printc
+
+			mov		A,GSC_status				;status trace
+			call	lcd_puthex4
+			mov		A,GSC_status2
+			call	lcd_puthex4
+			mov		A,#SPACE
+			call	lcd_write
+
+			;mov		A,#MQ_GSC_RECEIVE			;gsc receive
+			;call	msgchk
+			mov		A,GSC_rcount
+			call	lcd_puthex8
+			mov		A,#SPACE
+			call	lcd_write
+
+			;mov		A,#MQ_GSC_NORMAL			;gsc normal
+			;call	msgchk
+			mov		A,GSC_tcount
+			call	lcd_puthex8
+			mov		A,#SPACE
+			call	lcd_write
+			mov		A,#SPACE
+			jnb		GSC_DCD_ACTIVE,$$a01
+			mov		A,#'C'
+$$a01		call	lcd_write
+
+			mov		C,GSC_TFRAME
+			mov		A,#'0'
+			addc	A,#0
+			call	lcd_write
+
+
+
+$$c
+;show timers
+			mov		A,#LCD_R1
+			call	lcd_setpos
+			mov		DPTR,#lcdtxt_timers
+			call	lcd_printc
+
+$$c00		mov		LCD_cpos,#LCD_R1+10
+			mov		A,T100
+			jz		$$c01
+			mov		A,#'0'
+			call	lcd_write
+
+$$c01		mov		LCD_cpos,#LCD_R1+11
+			mov		A,T101
+			jz		$$c02
+			mov		A,#'1'
+			call	lcd_write
+
+$$c02		mov		LCD_cpos,#LCD_R1+12
+			mov		A,T102
+			jz		$$c03
+			mov		A,#'2'
+			call	lcd_write
+
+$$c03		mov		LCD_cpos,#LCD_R1+13
+			mov		A,T103
+			jz		$$c04
+			mov		A,#'3'
+			call	lcd_write
+
+$$c04		mov		LCD_cpos,#LCD_R1+14
+			mov		A,T104
+			jz		$$c05
+			mov		A,#'4'
+			call	lcd_write
+
+$$c05		mov		LCD_cpos,#LCD_R1+15
+			mov		A,T105
+			jz		$$c06
+			mov		A,#'5'
+			call	lcd_write
+$$c06		mov		LCD_cpos,#LCD_R1+16
+			mov		A,T106
+			jz		$$c07
+			mov		A,#'6'
+			call	lcd_write
+
+$$c07		mov		LCD_cpos,#LCD_R1+17
+			mov		A,T107
+			jz		$$c08
+			mov		A,#'7'
+			call	lcd_write
+
+$$c08		mov		LCD_cpos,#LCD_R1+18
+			mov		A,T108
+			jz		$$d
+			mov		A,#'8'
+			call	lcd_write
+
+$$d
+
+$$e
+;show clock
+			mov		A,#LCD_R3
+			call	lcd_setpos
+			mov		DPH,AT_data
+			mov		DPL,#AT_SBASE+46
+			movx	A,@DPTR
+			call	lcd_putdec
+			mov		A,#':'
+			call	lcd_write
+			dec		DPL
+			movx	A,@DPTR
+			call	lcd_putdec
+			mov		A,#':'
+			call	lcd_write
+			dec		DPL
+			movx	A,@DPTR
+			call	lcd_putdec
+
+$$flush		mov		A,#CMD_FLUSH
+			call	lcd_ioctl
+db_nodebug
+	ENDIF
+
+
+
+;inform user
+;-----------
+			mov		C,AT_ONLINE					;ONLINE indicator
+			cpl		C
+			mov		P4.5,C
+
+;update S-registers
+			mov		DPH,AT_data					;read gsc mode
+			mov		DPL,#AT_SBASE+15
+			movx	A,@DPTR
+			mov		C,ACC.0
+			mov		GSC_DUPLEX,C
+			mov		C,ACC.1
+			mov		GSC_FORCEPTT,C
+		
+			mov		DPH,AT_data					;get max framesize from 
+			mov		DPL,#AT_SBASE+49
+			movx	A,@DPTR
+			mov		SLIP_framesize,A
+
+
+
+;maintain memory
+;---------------
+$$mmem		mov		DPH,AT_data					;get max framesize from 
+			mov		DPL,#AT_SBASE+49
+			movx	A,@DPTR
+			call	mem_qfill
+
+;program handling
+;----------------
+			jb		AT_ONLINE,online_mode
+			call	at_cli
+			jmp		main
+
+online_mode
+
+;check online mode
+;-----------------
+			mov		DPH,AT_data					;read test options
+			mov		DPL,#AT_SBASE+16
+			movx	A,@DPTR
+
+
+			jz		normal_online
+			cje		A,#1,local_analog_loopback
+			cje		A,#2,local_digital_loopback
+			;cje		A,#3,remote_analog_loopback
+			cje		A,#4,remote_digital_loopback
+			cje		A,#5,ascii_connect
+
+			clr		AT_ONLINE
+			mov		A,#RC_BUSY
+			call	printrc
+			jmp		main
+
+
+
+local_analog_loopback
+;-----------------------------------------------------
+;this testprocedure reads a char from the serial port,
+;immediately writing it back.
+;-----------------------------------------------------
+			call	lsc_read
+			jc		$$b
+			cjne	A,#CAN,$$a
+
+			clr		AT_ONLINE
+			mov		A,#RC_OK
+			call	printrc
+			jmp		main
+
+$$a			call	lsc_write
+$$b			jmp		check_dtr
+
+local_digital_loopback
+;-----------------------------------------------------
+;this testprocedure reads an entire SLIP frame
+;from the serial port and converts it to RAW
+;while buffering.  When reception is complete,
+;it is re-encapsulated and sent back to the LSC
+;things from GSC are received as well
+;----------------------------------------------------- 
+			jmp		check_dtr
+
+normal_online
+;-----------------------------------------------------
+;yep, I even implemented this !
+;-----------------------------------------------------
+			call	gsc_process
+
+$$a			call	slip_read
+			jc		$$b
+			call	gsc_write
+
+$$b			call	gsc_read
+			jc		$$z
+			call	slip_write
+
+$$z			jmp		check_dtr
+
+
+
+remote_digital_loopback
+;-----------------------------------------------------
+;return received frames to the modem
+;-----------------------------------------------------
+			call	gsc_process
+
+$$a			call	lsc_read
+			jc		$$b
+$$a01		cjne	A,#CAN,$$b
+			clr		AT_ONLINE
+			call	at_write_crlf
+			mov		A,#RC_OK
+			call	printrc
+			jmp		main
+
+$$b			call	gsc_read
+			jc		$$done
+
+$$b01		cjne	A,#MSG_DATA_INDICATION,$$b02
+			pushm	ACC,DPH,DPL,AR0,AR1
+			mov		A,#1
+			call	mem_alloc
+			mov		R0,#0
+			mov		R1,#0
+			mov		ACC,#MSG_SEIZE_REQUEST
+			call	gsc_write
+			popm	AR1,AR0,DPL,DPH,ACC
+			mov		A,#MSG_DATA_REQUEST
+			call	gsc_write
+			jmp		$$done
+
+$$b02		cjne	A,#MSG_QUIET_INDICATION,$$b10
+			mov		A,#MSG_RELEASE_REQUEST
+			call	gsc_write
+			jmp		$$done
+
+$$b10		call	mem_free
+$$done		jmp		main
+
+
+ascii_connect
+;-----------------------------------------------------
+;this is for keyboard-to-keyboard testing
+;a <CR> or <LF> forces the typed line to be sent
+;over the GSC device
+;-----------------------------------------------------
+			jb		MM_ONLINE,$$aa
+			call	gsc_receive_on
+			setb	MM_ONLINE
+
+$$aa		call	gsc_process
+
+$$a			call	ascii_read
+			jc		$$a01
+			mov		A,#MSG_DATA_REQUEST
+			call	gsc_write
+			jmp		$$b
+
+$$a01		cjne	A,#STX,$$a02
+			mov		A,#1
+			call	mem_alloc
+			jc		$$x
+			mov		A,#MSG_SEIZE_REQUEST
+			call	gsc_write
+			jmp		$$b
+
+$$a02		cjne	A,#ETX,$$a03
+			mov		A,#1
+			call	mem_alloc
+			jc		$$x
+			mov		A,#MSG_RELEASE_REQUEST
+			call	gsc_write
+			jmp		$$b
+
+
+$$a03		cjne	A,#CAN,$$b
+			call	gsc_receive_off
+			call	gsc_transmit_off
+			call	gsc_flush
+			clr		MM_ONLINE
+			clr		AT_ONLINE
+			call	at_write_crlf
+			mov		A,#RC_OK
+			call	printrc
+			jmp		main
+
+$$b			call	gsc_read
+			jc		$$z
+			call	ascii_write
+			jmp		$$z
+
+$$x			setb	C
+			jmp		main
+
+$$z			clr		C
+			jmp		main
+
+
+
+check_dtr	
+;-----------------------------------------------------
+;this routines determines whether it
+;goes offline or not
+;-----------------------------------------------------
+			mov		DPH,AT_data
+			mov		DPL,#AT_SBASE+17
+			movx	A,@DPTR
+			jz		$$done
+
+			jnb		INT1,$$done
+			mov		A,#20
+			call	Delay
+			setb	INT0
+			clr		AT_ONLINE
+			mov		A,#RC_OK
+			call	printrc
+$$done		jmp		main
+
+
+
+
+
+;==========================================================
+;****						   ***************************
+;****   routine includes		***************************
+;****						   ***************************
+;==========================================================
+
+;device drivers
+			include	"lsc.src"			;serial port driver
+			include	"gsc.src"			;transceiver block driver
+			include	"timer.src"			;timer device
+			include	"slip.src"			;slip driver
+			include	"ascii.src"			;ascii driver 
+			include	"at.src"			;at command interpreter
+			include	"lcd.src"
+
+;code modules
+			include	"malloc.src"		;memory management
+			include	"tools.src"
+
+lcdtxt_phstate:		db "PH-STAT:",0
+lcdtxt_timers:		db "TIMERS :            ",0
+
+			END

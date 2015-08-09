@@ -1,0 +1,603 @@
+
+AddressfieldToCallsign:
+;==========================================================
+;Convert a single AX.25 addressfield to a readable callsign
+;==========================================================
+;INPUT: address = DPTR  :addressfield pointer
+;       call    = WR0   :callsign stringpointer
+;----------------------------------------------------------
+        pushw   DP
+        pushw   AWR0                    ;save registers
+        pushw   AWR1
+
+        mov     R2,#6                   ;number of alphanumeric bytes
+A2C_loop:
+
+        movx    A,@DPTR
+        inc     DPTR
+        jb      ACC.0,A2C_unalgn
+        rr      A
+        cje     A,#SPACE,A2C_ssid
+        cjae    A,#'Z'+1,A2C_charerr
+        cjb     A,#'0',A2C_charerr
+        cjae    A,#'A',A2C_charok
+        cjb     A,#'9'+1,A2C_charok
+        sjmp    A2C_charerr
+
+A2C_charerr:    jmp     A2C_charerror
+A2C_unalgn:     jmp     A2C_unaligned
+
+A2C_charok:
+        mov     P2,R1
+        movx    @R0,A
+        incw    WR0
+        djnz    R2,A2C_loop
+        inc     R2
+        
+A2C_ssid:
+        dec     R2
+        mov     A,R2
+        addwacc DP
+        movx    A,@DPTR                 ;read SSID
+        mov     R3,A
+        gssid   A                       ;calculate SSID-value
+        jz      A2C_chkend              ;no SSID to concatenate
+
+        push    ACC
+        mov     P2,R1
+        mov     A,#'-'
+        movx    @R0,A
+        incw    WR0
+        pop     ACC
+
+        cjb     A,#10,A2C_lastcfr
+        clr     C
+        subb    A,#10
+
+        push    ACC
+        mov     A,#'1'
+        mov     P2,R1
+        movx    @R0,A
+        incw    WR0
+        pop     ACC
+
+A2C_lastcfr:
+        add     A,#'0'
+        mov     P2,R1
+        movx    @R0,A
+        incw    WR0
+
+A2C_chkend:
+        mov     A,R3
+        jb      ACC.0,A2C_close
+
+;valid return
+;------------
+A2C_open:
+        clr     A                       ;errorfree conversion 
+        mov     P2,R1
+        movx    @R0,A
+        incw    WR0
+        mov     A,#AX25_DONE
+        clr     C                       ;addressfield was open
+        jmp     A2C_done
+
+A2C_close:
+        clr     A                       ;errorfree conversion 
+        mov     P2,R1
+        movx    @R0,A
+        incw    WR0
+        mov     A,#AX25_FIELDCLOSED
+        clr     C                       ;addressfield was closed
+        jmp     A2C_done
+
+;errorcodes
+;----------
+
+A2C_charerror:
+        mov     A,#AX25_ILLEGALCHAR
+        sjmp    A2C_error
+
+A2C_unaligned:
+        mov     A,#AX25_NOTFIELDALIGNED ;conversion error
+        sjmp    A2C_error
+
+A2C_error:
+        setb    C
+        sjmp    A2C_done
+
+A2C_done:
+        popw    AWR1
+        popw    AWR0
+        popw    DP
+        ret
+        
+
+
+CallsignToAddressfield:
+;==========================================================
+;Convert an ASCII callsign to a single AX.25 addressfield
+;==========================================================
+;INPUT: DPTR =  callsign        ;ASCII callsign
+;       WR0  =  addresfield     ;AX.25 frame addressfield
+;----------------------------------------------------------
+        pushw   AWR0
+        pushw   AWR1
+        pushret C2A_exit
+
+;initialize addressfield
+;-----------------------
+
+        pushw   DP
+        pushw   AWR0
+
+        movw    DP,WR0
+        mov     R0,#6
+
+C2A_initaddressfield:
+        mov     A,#SPACE                ;fill callsign with spaces
+        rl      A
+        movx    @DPTR,A
+        inc     DPTR
+        djnz    R0,C2A_initaddressfield
+
+        clr     A                       ;zerofill SSID field
+        movx    @DPTR,A
+
+        popw    AWR0
+        popw    DP
+
+;convert callsign to addressfield
+;--------------------------------
+        mov     R2,#6                   ;maximum chars without ssid
+
+C2A_next:
+        movx    A,@DPTR                 ;read char
+
+        jnz     C2A_checkrepeater       ;string terminator ?
+        cje     R2,#6,C2A_err_emptyaddressfield
+        jmp     C2A_fieldclosed
+
+C2A_checkrepeater:
+        cjne    A,#'@',C2A_checkssid    ;callsign separator ?
+        inc     DPTR
+        jmp     C2A_done
+
+
+C2A_checkssid:
+        cje     A,#'-',C2A_convertssid  ;callsign ssid indication ?
+        cje     R2,#0,C2A_err_addresstoolong
+
+C2A_checkchar:
+        cja     A,#'Z',C2A_err_illegalchar      ;check for ucase alphanum
+        cjb     A,#'0',C2A_err_illegalchar
+        cjae    A,#'A',C2A_convertchar
+        cjbe    A,#'9',C2A_convertchar
+        sjmp    C2A_err_illegalchar
+
+C2A_convertchar:
+        rl      A                       ;convert and store
+        mov     P2,WR0H
+        movx    @R0,A
+
+        inc     DPTR
+        incw    WR0
+        dec     R2
+        jmp     C2A_next
+
+;conversion error indicators
+;---------------------------
+
+C2A_err_illegalchar:
+        mov     A,#AX25_ILLEGALCHAR
+        setb    C
+        ret
+
+C2A_err_emptyaddressfield:
+        mov     A,#AX25_EMPTYADDRESSFIELD
+        setb    C
+        ret
+
+C2A_err_addresstoolong:
+        mov     A,#AX25_ADDRESSTOOLONG
+        setb    C
+        ret
+
+C2A_err_ssidtoobig:
+        mov     A,#AX25_SSIDTOOBIG
+        setb    C
+        ret
+
+C2A_fieldclosed:
+        clr     C
+        mov     A,#AX25_FIELDCLOSED
+        ret
+
+C2A_done:
+        clr     C
+        mov     A,#AX25_DONE
+        ret
+
+C2A_exit:
+        popw    AWR1
+        popw    AWR0
+        ret
+
+C2A_convertssid:
+
+;calculate SSID offset in addressfield
+;-------------------------------------
+        mov     A,R2
+        addwacc WR0
+        movw    WR1,AWR0
+
+;convert ssid to addressfield value
+;----------------------------------
+        movwabs WR0,0
+
+C2A_cssid_nextcipher:
+        inc     DPTR
+        movx    A,@DPTR
+
+        jz      C2A_cssid_fieldclosed
+        cjne    A,#'@',C2A_cssid_number
+        inc     DPTR
+        jmp     C2A_cssid_done
+
+C2A_cssid_number:
+        cjb     A,#'0',C2A_cssid_illegalchar
+        cja     A,#'9',C2A_cssid_illegalchar
+        clr     C
+        subb    A,#'0'
+
+        call    AddDecCipher
+        jc      C2A_err_ssidtoobig
+        jmp     C2A_cssid_nextcipher
+
+;conversion error indicators
+;---------------------------
+
+C2A_cssid_done:
+        call    C2A_cssid_savessid
+        jmp     C2A_done
+
+C2A_cssid_fieldclosed:
+        call    C2A_cssid_savessid
+        jmp     C2A_fieldclosed
+
+C2A_cssid_illegalchar:
+        call    C2A_cssid_savessid
+        jmp     C2A_err_illegalchar
+
+C2A_cssid_savessid:
+        mov     A,WR0L
+        cja     A,#15,C2A_err_ssidtoobig
+        rl      A
+
+        movw    WR0,AWR1
+        mov     P2,WR0H
+        movx    @R0,A
+        ret
+
+
+GetAddressSize:
+;==========================================================
+;analyse addressfield size from an AX.25 frame
+;==========================================================
+;INPUT: frame   = DPTR  :frame pointer
+;OUTPUT:size    = ACC   :addressfield size in bytes
+;----------------------------------------------------------
+        pushw   DP
+        push    AR0
+        push    B
+
+        mov     R0,#0
+
+GAS_seeksize:
+        movx    A,@DPTR                 ;find a byte with bit 0 set
+        inc     DPTR
+        inc     R0
+        jnb     ACC.0,GAS_seeksize
+
+        mov     A,R0                    ;addressfield alignment
+        mov     B,#7
+        div     AB
+        xch     A,B
+        jnz     GAS_noalgn              ;counter is not addressfield aligned
+        xch     A,B
+        cjb     A,#10+1,GAS_valid
+        ;sjmp    GAS_adr2long
+
+GAS_adr2long:
+        setb    C
+        mov     A,#AX25_ADDRESSTOOLONG
+        sjmp    GAS_error
+
+GAS_noalgn:
+        setb    C
+        mov     A,#AX25_NOTFIELDALIGNED
+        sjmp    GAS_error
+
+GAS_error:
+        setb    C
+        sjmp    GAS_done
+
+GAS_valid:
+        clr     C
+
+GAS_done:
+        pop     B
+        pop     AR0
+        popw    DP
+        ret
+
+
+
+GetFrameControl:
+;==========================================================
+;Analyse framecontrol byte and give result
+;==========================================================
+;INPUT: frame   = DPTR  :framepointer
+;OUTPUT:stat    = ACC   :framecontrol status
+;----------------------------------------------------------
+        pushw   DP
+        call    GetAddressSize          ;get addresssize
+        jc      GFC_sizeerror
+        mov     B,#7                    ;find bytesize
+        mul     AB
+        addwacc DP
+        movx    A,@DPTR                 ;read control byte
+        clr     C
+        sjmp    GFC_done
+
+GFC_sizeerror:
+        setb    C
+
+GFC_done:
+        popw    DP
+        ret
+
+
+RouteToAddress:
+;==========================================================
+;Convert an AX.25 address to a readable callsign
+;==========================================================
+;INPUT: frame   = DPTR  :AX.25 frame pointer
+;       sbuf    = WR0   :sourcepath buffer
+;       dbuf    = WR1   :destinationpath buffer
+;----------------------------------------------------------
+        push    AR6
+        push    AR7
+        pushret R2A_exit
+
+        mov     R6,#2
+
+;store destination callsign
+;--------------------------
+        pushw   DP
+        pushw   AWR0
+        pushw   AWR1
+        popw    DP                      ;DP  = destination
+        popw    AWR1                    ;WR1 = source
+        popw    AWR0                    ;WR0 = frame 0
+
+        call    CallsignToAddressfield  ;store destination address
+        mov     R7,A
+        jc      R2A_error
+
+;store source callsign
+;---------------------
+        pushw   DP
+        pushw   AWR1
+        popw    DP                      ;DP  = source
+        popw    AWR1                    ;WR1 = destination
+        addwabs WR0,7
+
+        call    CallsignToAddressfield  ;store source address
+        jc      R2A_error
+        cje     R7,#AX25_FIELDCLOSED,R2A_terminate
+
+;store digipeaters
+;-----------------
+        movw    DP,WR1                  ;DP = destination digipeaters
+
+R2A_storedigi:
+        addwabs WR0,7
+
+        call    CallsignToAddressfield
+        jc      R2A_error
+        cje     A,#AX25_FIELDCLOSED,R2A_terminate
+
+        djnz    R6,R2A_storedigi
+
+R2A_terminate:
+        addwabs WR0,6
+        mov     P2,WR0H
+        movx    A,@WR0L
+        setb    ACC.0
+        movx    @WR0L,A
+        jmp     R2A_done
+
+R2A_error:
+        setb    C
+        ret
+
+R2A_done:
+        clr     C
+        ret
+
+R2A_exit:
+        pop     AR7
+        pop     AR6
+        ret
+
+AddressToRoute:
+;==========================================================
+;Convert an AX.25 address to a readable callsign
+;==========================================================
+;INPUT: frame   = DPTR  :AX.25 frame pointer
+;       sbuf    = WR0   :sourcepath buffer
+;       dbuf    = WR1   :destinationpath buffer
+;----------------------------------------------------------
+        pushw   DP
+        pushregs
+
+;create sourcecall
+;-----------------
+        call    GetAddressSize          ;create sourcecall
+        jc      A2R_error
+        subb    A,#2
+        mov     R4,A
+        addwabs DP,7
+        call    AddressfieldToCallsign
+        jc      A2R_error
+
+;create destinationcall
+;----------------------
+        movw    WR0,AWR1                ;create destinationcall
+        clr     C
+        subwabs DP,7
+        call    AddressfieldToCallsign
+        jc      A2R_error
+
+;append digipeaters to destinationcall
+;-------------------------------------
+        addwabs DP,14                   ;initialize
+
+        movw    WR0,AWR1
+
+A2R_loop:
+        mov     A,R4                    ;check for more digipeaters
+        jz      A2R_digidone
+        dec     R4
+
+        movw    WR1,DP
+        movw    DP,WR0
+
+A2R_findend:
+        movx    A,@DPTR
+        jz      A2R_foundend
+        inc     DPTR
+        sjmp    A2R_findend
+
+A2R_foundend:
+        mov     A,#'@'
+        movx    @DPTR,A
+        inc     DPTR
+
+        movw    WR0,DP
+        movw    DP,WR1
+
+        call    AddressfieldToCallsign
+        jc      A2R_error
+        addwabs DP,7
+        jmp     A2R_loop
+
+A2R_syserr:
+        mov     A,#AX25_UNKNOWN
+        sjmp    A2R_error
+
+A2R_digidone:
+        clr     C
+        sjmp    A2R_done
+
+A2R_error:
+        setb    C
+
+A2R_done:
+        popregs
+        popw    DP
+        ret
+
+GetFramePID:
+;==========================================================
+;extract protocol identifier from AX.25 frame
+;==========================================================
+;INPUT: frame   = DPTR  :frame pointer
+;OUTPUT:stat    = R0/ACC:framecontrol status
+;----------------------------------------------------------
+        pushw   DP
+        push    B
+        call    GetFrameControl
+        jc      GFP_error
+        jmpftyp GFP_typok,GFP_ftyperr,GFP_typok
+        
+GFP_typok:
+        call    GetAddressSize          ;get addresssize
+        jc      GFP_error
+        mov     B,#7                    ;find bytesize
+        mul     AB
+        addwacc DP
+        inc     DPTR
+
+        mov     R0,#-1
+
+GFP_seekpid:
+        movx    A,@DPTR                 ;read control byte
+        inc     R0
+        inc     DPTR
+        cjne    A,#PID_ESCAPE,GFP_valid
+        sjmp    GFP_seekpid
+
+GFP_ftyperr:
+        mov     A,#AX25_INCORRECTFTYPE
+        ;sjmp    GFP_error
+
+GFP_error:
+        setb    C
+        sjmp    GFP_done
+
+GFP_valid:
+        clr     C
+
+GFP_done:
+        pop     B
+        popw    DP
+        ret
+
+
+GetFrameInfo:
+;==========================================================
+;find information field inside an AX.25 frame
+;==========================================================
+;INPUT: address = DPTR  :addressfield pointer
+;OUTPUT:info    = DPTR  :infofield framepointer
+;----------------------------------------------------------
+        push    B
+        call    GetFrameControl
+        jc      GFI_error
+        anl     A,#NOT(FC_POLL)
+        jmpftyp GFI_typok,GFI_ftyperr,GFI_uitest
+
+GFI_uitest:
+        cjne    A,#UFC_UI,GFI_ftyperr
+        
+GFI_typok:
+        call    GetAddressSize          ;get addresssize
+        jc      GFI_error
+        mov     B,#7                    ;find bytesize
+        mul     AB
+        addwacc DP
+        inc     DPTR
+
+GFI_seekpid:
+        movx    A,@DPTR                 ;read control byte
+        inc     DPTR
+        cjne    A,#PID_ESCAPE,GFI_valid
+        sjmp    GFI_seekpid
+
+GFI_ftyperr:
+        mov     A,#AX25_INCORRECTFTYPE
+        ;sjmp    GFI_error
+
+GFI_error:
+        setb    C
+        sjmp    GFI_done
+
+GFI_valid:
+        clr     C
+
+GFI_done:
+        pop     B
+        ret
+        

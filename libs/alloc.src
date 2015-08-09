@@ -1,0 +1,354 @@
+    IFNDEF  MALLOC_SRC
+MALLOC_SRC EQU TRUE
+
+;**
+;**     $Filename: slipdev.src
+;**     $Author: on1dds
+;**     $Date: 24/08/2000
+;**
+;**     memory allocation routines
+;**
+;**     freeware
+;**
+
+MEMORY_START EQU 00001h
+MEMORY_END   EQU 0FFFFh
+
+            SEGMENT CODE
+
+;definition of memory allocation header
+
+MAH         STRUCT
+next        dw  ?
+prev        dw  ?
+size        dw  ?
+MAH         ENDSTRUCT
+
+
+    PROC    init_dynamic_memory
+
+
+            ;create first header
+
+            mov     DPTR,#MEMORY_START      ;header = begin of memory
+            movwabs WR0,MEMORY_END-MAH_len  ;next_head = end of memory
+
+            mov     A,WR0L              ;header->next = nexthead           
+            movx    @DPTR,A
+            inc     DPTR
+            mov     A,WR0H
+            movx    @DPTR,A
+            inc     DPTR
+
+            clr     A                   ;header->prev = NULL
+            movx    @DPTR,A
+            inc     DPTR
+            movx    @DPTR,A
+            inc     DPTR
+
+            clr     A                   ;header->size = NULL
+            movx    @DPTR,A
+            inc     DPTR
+            movx    @DPTR,A
+            inc     DPTR
+
+
+            ;create last header
+
+            mov     DPTR,#MEMORY_END-MAH_len    ;header = end of memory
+            movwabs WR0,MEMORY_START            ;prev_head = begin of memory
+
+            clr     A                   ;header->next = NULL
+            movx    @DPTR,A
+            inc     DPTR
+            movx    @DPTR,A
+            inc     DPTR
+
+            mov     A,WR0L             ;header->prev = prevhead
+            movx    @DPTR,A
+            inc     DPTR
+            mov     A,WR0H
+            movx    @DPTR,A
+            inc     DPTR
+
+            clr     A                   ;header->size = NULL
+            movx    @DPTR,A
+            inc     DPTR
+            movx    @DPTR,A
+            inc     DPTR
+
+            clr     C
+            ret
+    
+    ENDP    init_dynamic_memory
+    
+
+    PROC    showmemuse
+
+            push    ACC
+            pushw   DP
+            pushw   AWR0
+            pushw   AWR1
+            pushw   AWR2
+            pushw   AWR3
+
+            movwabs DP,MEMORY_START     ;current_header = MEMORY_START;
+
+$$findmem:                              ;while(){
+
+            movw    WR0,DP              ;WR0 = header
+
+            movx    A,@DPTR             ;WR1 = header->next
+            mov     WR1L,A
+            inc     DPTR
+            movx    A,@DPTR
+            mov     WR1H,A
+            inc     DPTR
+
+            movx    A,@DPTR             ;WR2 = header->prev
+            mov     WR2L,A
+            inc     DPTR
+            movx    A,@DPTR
+            mov     WR2H,A
+            inc     DPTR
+
+            movx    A,@DPTR             ;WR3 = header->size
+            mov     WR3L,A
+            inc     DPTR
+            movx    A,@DPTR
+            mov     WR3H,A
+            inc     DPTR
+
+            mov     A,#'#'
+            call    PutChar
+            movw    DP,WR0
+            call    PutAddress
+            mov     A,#':'
+            call    PutChar
+
+            movw    DP,WR1
+            call    PutAddress
+            mov     A,#','
+            call    PutChar
+
+            movw    DP,WR2
+            call    PutAddress
+            mov     A,#','
+            call    PutChar
+
+            movw    DP,WR3
+            call    PutAddress
+            call    NewLine
+
+            movw    DP,WR1
+
+            mov     A,DPH
+            orl     A,DPL
+            jnz     $$findmem
+            call    NewLine
+
+            popw    AWR3
+            popw    AWR2
+            popw    AWR1
+            popw    AWR0
+            popw    DP
+            pop     ACC
+            clr     C
+            ret
+    ENDP    showmemuse
+
+
+
+
+
+
+    PROC    allocmem                ;*mem = allocmem(size)
+
+            push    ACC
+            push    AR0
+            push    AR1
+            push    AR2
+            push    AR3
+            push    AR4
+            push    AR5
+            push    AR6
+            push    AR7
+
+
+            addwabs WR0,MAH_len         ;size+=MAH_len
+            movw    WR3,WR0             ;WR3 = memsize to allocate
+
+            movwabs WR1,MEMORY_START    ;current_header = MEMORY_START;
+
+$$findmem:                              ;while(){
+            movw    DP,WR1              ;DPTR = current_header
+
+            push    DPL
+            push    DPH
+
+            movx    A,@DPTR             ;WR1 = next_header
+            mov     WR1L,A
+            inc     DPTR
+            movx    A,@DPTR
+            mov     WR1H,A
+            inc     DPTR
+
+            mov     A,WR1L
+            orl     A,WR1H
+            jz      $$errdp             ;(pop the pushed DPTR at once)
+
+            inc     DPTR                ;WR0 = header+MAH_size+datasize
+            inc     DPTR
+            movx    A,@DPTR
+            mov     WR0L,A
+            inc     DPTR
+            movx    A,@DPTR
+            mov     WR0H,A
+            inc     DPTR
+            addw    WR0,DP
+
+            movw    WR2,AWR1            ;WR2 = WR1 - WR0
+            subw    WR2,AWR0
+
+            pop     DPH
+            pop     DPL
+
+            cwjb    WR3,AWR2,$$allocmem ;if WR3 < WR2 then alloc space
+            sjmp    $$findmem           ;}
+
+$$errdp:    pop     DPH
+            pop     DPL
+
+$$err:      pop     AR7
+            pop     AR6
+            pop     AR5
+            pop     AR4
+            pop     AR3
+            pop     AR2
+            pop     AR1
+            pop     AR0
+            pop     ACC
+            setb    C
+
+            ret
+
+
+$$allocmem:
+                                        ;WR0 = current_header
+                                        ;WR1 = next_header
+                                        ;WR2 = prev_header
+                                        ;WR3 = size
+
+            ;create new header
+
+            push    DPL                 ;push prev header (stack)
+            push    DPH
+
+            movw    DP,WR0              ;header->next = next_header (WR1)
+            mov     A,WR1L
+            movx    @DPTR,A
+            inc     DPTR
+            mov     A,WR1H
+            movx    @DPTR,A
+            inc     DPTR
+
+            pop     AWR2H
+            pop     AWR2L
+            mov     A,WR2L              ;header->prev  = prev_header (stack)
+            movx    @DPTR,A
+            inc     DPTR
+            mov     A,WR2H
+            movx    @DPTR,A
+            inc     DPTR
+
+            subwabs WR3,MAH_len         ;size-=MAH_len
+            mov     A,WR3L
+            movx    @DPTR,A
+            inc     DPTR
+            mov     A,WR3H
+            movx    @DPTR,A
+            inc     DPTR
+            pushw   DP
+
+            ;hang in to previous header
+
+            movw    DP,WR2              ;header->prev->next = header
+            mov     A,WR0L
+            movx    @DPTR,A
+            inc     DPTR
+            mov     A,WR0H
+            movx    @DPTR,A
+
+            ;hang in to next header
+
+            movw    DP,WR1
+            inc     DPTR
+            inc     DPTR
+            mov     A,WR0L
+            movx    @DPTR,A
+            inc     DPTR
+            mov     A,WR0H
+            movx    @DPTR,A
+
+            popw    DP
+
+            clr     C
+
+            pop     AR7
+            pop     AR6
+            pop     AR5
+            pop     AR4
+            pop     AR3
+            pop     AR2
+            pop     AR1
+            pop     AR0
+            pop     ACC
+            clr     C
+            ret
+    ENDP    allocmem
+
+
+
+    PROC    freemem
+
+            pushw   AWR0
+            pushw   AWR1
+            pushw   AWR2
+    
+            clr     C
+            subwabs DP,MAH_len          ;to start of header
+            subwabs DP,MAH_len          ;to start of header
+
+            ;get prev/next pointer
+
+            addwabs DP,MAH_next
+            movwx   WR1,@DPTR
+
+            addwabs DP,MAH_prev-MAH_next
+            movwx   WR2,@DPTR
+
+            ;adjust predecessor
+
+            movw    DP,WR2
+            addwabs DP,MAH_next
+            movwx   @DPTR,WR1
+
+            ;adjust successor
+
+            movw    DP,WR1
+            addwabs DP,MAH_prev
+            movwx   @DPTR,WR2
+
+            popw    AWR2
+            popw    AWR1
+            popw    AWR0
+
+            clr     C
+            ret
+
+    ENDP    freemem
+
+
+
+    ENDIF
+

@@ -1,0 +1,198 @@
+;==========================================================
+;PROJECT: Hello World
+;DATE   : 10 januari 1998
+;==========================================================
+
+        $NOPAGING
+        $NOSYMBOLS
+        $MOD152
+
+        $NOLIST
+        $INCLUDE(X:mcb152.inc)
+        $LIST
+
+        CSEG
+
+        SETCODE Start,0100h
+        SETCODE LEDBlink,0200h
+
+        SETINT  RESET,Start
+        SETINT  TIMER1,LEDBlink
+
+
+
+DIMSPEED        EQU 50
+ROLLSPEED       EQU 10
+ROLLHOLD        EQU 80
+;----------------------------------------------------------
+;
+;       On-Chip Variable definitions
+;
+;----------------------------------------------------------
+
+        STRUCTURE 030h          ;new data structure
+        UBYTE   led1
+        UBYTE   led2
+        UBYTE   led3
+        UBYTE   led4
+        UBYTE   led5
+        UBYTE   led6
+        UBYTE   counter
+
+
+
+
+        ORG     Start
+
+;init variables
+;--------------
+        mov     R7,#DIMSPEED
+        mov     R6,#ROLLSPEED
+        mov     R5,#ROLLHOLD
+        mov     R4,AR7
+        clr     A
+        mov     counter,A
+        mov     led1,A
+        mov     led2,A
+        mov     led3,A
+        mov     led4,A
+        mov     led5,A
+        mov     led6,A
+
+
+;init interval timer
+;-------------------
+        anl     TMOD,#00001111b
+        orl     TMOD,#00010000b
+
+        clr     TF1
+        clr     TR1
+        mov     TH1,#HIGH -9204          ;CLOCKTICKS/(12*1000/10)
+        mov     TL1,#LOW -9204
+        setb    TR1
+
+        setb    ET1
+        setb    EA              ;enable all interrupts
+
+
+restart:mov     R1,#0
+roll1:  mov     A,R1
+        add     A,#30h
+        mov     R0,A
+        mov     @R0,#20
+        mov     A,R6
+        call    Delay
+        inc     R1
+        cjne    R1,#6,roll1
+        mov     A,R5
+        call    Delay
+
+        mov     R1,#5
+roll2:  mov     A,R1
+        add     A,#30h
+        mov     R0,A
+        mov     @R0,#20
+        mov     A,R6
+        call    Delay
+        dec     R1
+        cjne    R1,#-1,roll2
+        mov     A,R5
+        call    Delay
+
+        mov     R7,#DIMSPEED*2
+
+        mov     led1,#20
+        mov     led2,#20
+        mov     led3,#20
+        mov     led4,#20
+        mov     led5,#20
+        mov     led6,#20
+        mov     A,R5
+        call    Delay
+        mov     A,R5
+        call    Delay
+        mov     A,R5
+        call    Delay
+        mov     R7,#DIMSPEED
+        jmp     restart
+
+
+
+        ORG     LEDBlink
+        pushstate
+        push    ACC
+
+        clr     TF1
+        clr     TR1
+        mov     TH1,#HIGH -920
+        mov     TL1,#LOW -920
+        setb    TR1
+
+        mov     A,counter
+        inc     A
+        anl     A,#0Fh
+        mov     counter,A
+
+
+led1tst:cjae    A,led1,led1off
+led1on: clr     P4.0
+        sjmp    led2tst
+led1off:setb    P4.0
+
+
+led2tst:cjae    A,led2,led2off
+led2on: clr     P4.1
+        sjmp    led3tst
+led2off:setb    P4.1
+
+
+led3tst:cjae    A,led3,led3off
+led3on: clr     P4.2
+        sjmp    led4tst
+led3off:setb    P4.2
+
+
+led4tst:cjae    A,led4,led4off
+led4on: clr     P4.3
+        sjmp    led5tst
+led4off:setb    P4.3
+
+
+led5tst:cjae    A,led5,led5off
+led5on: clr     P4.4
+        sjmp    led6tst
+led5off:setb    P4.4
+
+
+led6tst:cjae    A,led6,led6off
+led6on: clr     P4.5
+        sjmp    led7tst
+led6off:setb    P4.5
+
+
+led7tst:djnz    R4,lightok
+        mov     R4,AR7
+
+        clr     A
+
+
+decled1:cje     A,led1,decled2
+        dec     led1
+decled2:cje     A,led2,decled3
+        dec     led2
+decled3:cje     A,led3,decled4
+        dec     led3
+decled4:cje     A,led4,decled5
+        dec     led4
+decled5:cje     A,led5,decled6
+        dec     led5
+decled6:cje     A,led6,decled7
+        dec     led6
+decled7:
+
+lightok:pop     ACC
+        popstate
+        reti
+
+
+        END

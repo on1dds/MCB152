@@ -1,0 +1,21 @@
+;==========================================================
+;PROJECT: Hello World
+;DATE   : 08 august 1998
+;==========================================================
+
+        $MOD152
+        $INCLUDE(X:MCB152.INC)
+
+
+        CSEG
+        SETCODE Start,0100h
+        SETINT  RESET,Start
+
+        ORG     Start
+        mov     DPTR,#txt_hello
+        call    PutMessage
+        ret
+
+
+txt_hello:      db 'Hello World!',CR,0
+        END

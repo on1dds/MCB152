@@ -1,0 +1,245 @@
+;==========================================================
+;PROJECT: MCB152 KISS-TNC
+;VERSION: v1.1
+;DATE   : 22 march 1998
+;
+;COMMENT: Firmware for standard KISS-TNC.
+;
+;HARDWARE EXTENSION:
+;DK9RR,half-duplex FSK/AFSK modem with internal clocking
+;==========================================================
+        $NOPAGING
+        $MOD152
+
+;----------------------------------------------------------
+;
+;    header files
+;
+;----------------------------------------------------------
+        $NOLIST
+        $INCLUDE(X:mcb152.inc)
+        $LIST
+
+;----------------------------------------------------------
+;
+;    constant definitions
+;
+;----------------------------------------------------------
+GSC_SPEED       EQU     GSC_XCLK        ;T/RX speed (external clocking)
+MAXFRAMESIZE    EQU     2*256           ;maximum framelength (per 256 bytes)
+
+        $INCLUDE(include\kiss.inc)
+
+;----------------------------------------------------------
+;
+;    vector table initialisation
+;
+;----------------------------------------------------------
+        CSEG
+
+;------ bootvector
+
+        SETCODE TNC_Start,00100h
+        SETINT  RESET,TNC_Start         ;coldreboot handler
+
+;------ interrupt vectors
+
+        SETINT  SINT,GetLSC             ;TX-SLIP handler
+        SETINT  GSCRV,GetGSC_Valid      ;RX valid handler
+        SETINT  GSCRE,GetGSC_Error      ;RX error handler
+        SETINT  GSCTV,PutGSC_Valid      ;TX valid handler
+        SETINT  GSCTE,PutGSC_Error      ;TX error handler
+        SETINT  DMA1, GetGSC_Reject     ;RX framesize overflow
+
+
+        ORG     TNC_Start
+;==========================================================
+;[AL]:Bootcode
+;==========================================================
+;
+;----------------------------------------------------------
+
+;disable interrupts
+;------------------
+        clr     A               ;disable all interrupt resources
+        mov     IE,A
+        mov     IEN1,A
+
+
+;init stack pointer
+;------------------
+        mov     SP,#128         ;init stack-base
+        pushret RESET
+
+;init IO/Devices
+;---------------
+        call    InitLSC
+        call    InitGSC
+
+        mov     P4,#11000000b
+
+        call    AutobaudFEND
+        mov     TH1,A
+        mov     SCON,#01010011b         ;M1,RX enable,TI+RI set
+        call    GetChar
+
+        mov     P4,#11111111b
+
+;init interrupts
+;---------------
+        clr     A               ;disable all interrupt resources
+        mov     IE,A
+        mov     IEN1,A
+
+        setb    ES              ;enable serial interrupt
+        setb    EGSRV           ;enable GetGSC_Valid
+        setb    EGSRE           ;enable GetGSC_Error for invalid framedata
+        setb    EDMA1           ;enable GetGSC_Error for frame too long
+
+        setb    EGSTV           ;enable PutGSC_Valid
+        setb    EGSTE           ;enable PutGSC_Error for invalid framedata
+        setb    EA              ;enable all interrupts
+
+        setb    PGSRV           ;enable GetGSC_Valid
+        setb    PGSRE           ;enable GetGSC_Error for invalid framedata
+        setb    PDMA1           ;enable GetGSC_Error for frame too long
+
+
+KISSMain:
+;----------------------------------------------------------
+;Writing data from buffers are low-priority activities
+;and thus are polled here for action in application level.
+;Additional functionalities, impossible to handle from
+;inside the interrupts  are inserted here as well.
+;By responding to certain flags, set inside the interrupts,
+;these extra subcalls can be executed.
+;----------------------------------------------------------
+        call    PutGSC
+        call    PutLSC
+        call    Additives
+
+        pbmov   LED_GETGSC,DCD
+
+        mov     A,rx_allocatedH
+        cjae    A,#HIGH(RXBUFSIZE-MAXFRAMESIZE),KM_rxfull
+
+KM_rxok:
+        pbclr   LED_RXFULL
+        sjmp    KISSMain
+
+KM_rxfull:
+        pbset   LED_RXFULL
+        sjmp    KISSMain
+
+
+
+Additives:
+;==========================================================
+;[AL] Addititional routines
+;==========================================================
+;Some routines, that don't fit in LSC nor GSC handlers.
+;These routines don't have a main purpose, but characterise
+;the TNC 
+;----------------------------------------------------------
+        jbc     KF_WARMREBOOT,ADD_WarmReboot
+        jbc     KF_COLDREBOOT,ADD_ColdReboot
+        jb      KF_INFO,ADD_Info
+        jb      KF_KISSINFO,ADD_KissInfo
+        ret
+
+ADD_ColdReboot:
+;==========================================================
+;coldreboot to MCB152
+;==========================================================
+        clr     EA
+        jmp     ColdReboot
+
+ADD_WarmReboot:
+;==========================================================
+;reboot the KISS-TNC.
+;==========================================================
+        clr     EA
+        jmp     RESET
+
+ADD_Info:
+;==========================================================
+;Show firmware information
+;==========================================================
+        mov     A,#100
+        call    Delay
+
+        call    PL_OpenKISS
+        mov     DPTR,#AX25_frameheader
+        call    PutMessage
+        mov     DPTR,#AX25_version
+        call    PutMessage
+        call    PL_CloseKISS
+        pbclr   LED_PUTLSC
+        clr     KF_INFO
+        ret
+
+ADD_KissInfo:
+;==========================================================
+;show kiss parameters
+;==========================================================
+        mov     A,#100
+        call    Delay
+
+        call    PL_OpenKISS
+        mov     DPTR,#AX25_frameheader
+        call    PutMessage
+
+        mov     DPTR,#AX25_txdelay
+        call    PutMessage
+        mov     A,kiss_txdelay
+        call    PutDec8
+        call    Newline
+
+        mov     DPTR,#AX25_persist
+        call    PutMessage
+        mov     A,kiss_persist
+        call    PutDec8
+        call    Newline
+
+        mov     DPTR,#AX25_slottime
+        call    PutMessage
+        mov     A,kiss_slottime
+        call    PutDec8
+        call    Newline
+
+        mov     DPTR,#AX25_txtail
+        call    PutMessage
+        mov     A,kiss_txtail
+        call    PutDec8
+        call    Newline
+
+        call    PL_CloseKISS
+        pbclr   LED_PUTLSC
+        clr     KF_KISSINFO
+        ret
+
+AX25_frameheader:
+        db      0a2h,0a8h,090h,040h,040h,040h,0e0h
+        db      09ah,086h,084h,062h,06ah,064h,061h
+        db      003h,0f0h   
+        db      0
+
+AX25_txdelay:   db 'TxDelay=',0
+AX25_persist:   db 'Persist=',0
+AX25_slottime:  db 'Slottime=',0
+AX25_txtail:    db 'TxTail=',0
+
+AX25_version:
+        db 'KISS-TNC v1.1, simplex NRZ with external clocking for '
+        db 'Baycom compatible modems',CR,LF
+        db 'coded by ON1DDS, 22/03/1998',CR,LF,0
+
+;==========================================================
+;source extensions
+;==========================================================
+        $INCLUDE(lsc.src)               ;local I/O 
+        $INCLUDE(gsc.src)               ;global I/O
+        $INCLUDE(data\persist.dat)      ;persistance data
+
+        END
+

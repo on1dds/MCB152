@@ -1,0 +1,83 @@
+CopyMemXX:
+;==========================================================
+;copy memory from XRAM to XRAM
+;==========================================================
+;DPTR  = dest        = destination address (XRAM)
+;P2/R0 = source      = source address (XRAM)
+;R1    = length      = block length
+;beware, memory must not overlap
+;----------------------------------------------------------
+       movx   A,@R0
+       movx   @DPTR,A
+       inc    DPTR
+       inc    R0
+       djnz   R1,CopyMemXX
+       ret
+
+CopyMemXC:
+;==========================================================
+;copy memory from CMEM to XRAM
+;==========================================================
+;P2/R0 = dest        = destination address (high byte)
+;DPTR  = source      = source address
+;R1    = length      = block lenth
+;----------------------------------------------------------
+       push   AR2
+       mov    R2,#0
+
+CMXC_copy:
+       mov    A,R2
+       movc   A,@A+DPTR
+       movx   @R0,A
+       inc    R0
+       inc    R2
+       djnz   R1,CMXC_copy
+
+       pop    AR2
+       ret
+
+
+CmpStringXC:
+;==========================================================
+;compare string in CMEM and XRAM
+;==========================================================
+;DPTR  = cmemptr     = source compare
+;P2/R0 = xramptr     = dest compare
+;----------------------------------------------------------
+       push   AR1
+       push   AR0
+       %push(DP)
+
+CSXC_compare:
+       mov    A,#0                 ;read source byte
+       movc   A,@A+DPTR
+       inc    DPTR
+       jz     CSXC_done
+       mov    R1,A
+
+       movx   A,@R0                ;read dest byte
+       inc    R0
+
+       cjne   A,AR1,CSXC_fail      ;compare bytes
+       sjmp   CSXC_compare
+
+CSXC_done:
+       pop    ACC
+       pop    ACC
+       pop    ACC
+       pop    AR1
+
+       clr    C
+       ret
+
+CSXC_fail:
+       %pop(DP)
+       pop    AR0
+       pop    AR1
+
+       setb   C
+       ret
+
+
+
+

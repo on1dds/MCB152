@@ -1,0 +1,52 @@
+;==========================================================
+;PROJECT: Show GRXD/GTXD status
+;DATE   : 8 april 1998
+;==========================================================
+
+        $NOPAGING
+        $NOSYMBOLS
+        $MOD152
+
+        $NOLIST
+        $INCLUDE(X:mcb152.inc)
+        $LIST
+
+        SETCODE Start,0100h
+        SETINT  RESET,Start
+
+        ORG     Start
+
+        clr     P4.6
+        clr     P4.7
+
+restart:
+        mov     R0,#1
+
+left:   mov     A,R0
+        cpl     A
+        mov     P4,A
+        mov     A,R0
+        rl      A
+        mov     R0,A
+
+        mov     A,#70
+        call    Delay
+        cjne    R0,#00100000b,left
+
+
+
+right:  mov     A,R0
+        cpl     A
+        mov     P4,A
+
+        mov     A,R0
+        rr      A
+        mov     R0,A
+
+        mov     A,#70
+        call    Delay
+        cjne    R0,#00000001b,right
+
+        jmp     restart
+
+        END

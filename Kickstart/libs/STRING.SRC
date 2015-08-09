@@ -1,0 +1,429 @@
+ 
+StrNull:
+;==========================================================
+;Erase all characters in a string
+;==========================================================
+;INPUT:         DPTR = string to erase
+;----------------------------------------------------------
+        pushw   DP
+        push    ACC
+
+S0_loop:
+        movx    A,@DPTR         ;read character
+        jz      S0_done         ;NULL ??? exit
+        clr     A
+        movx    @DPTR,A         ;clear character
+        inc     DPTR            ;select next
+        sjmp    S0_loop         ;repeat
+
+S0_done:clr     C
+        pop     ACC
+        popw    DP
+        ret
+
+StrLength:
+;==========================================================
+;Count non-null characters in string
+;==========================================================
+;INPUT:         DPTR = string
+;
+;OUTPUT:        WR0  = length of string
+;               C = set when memory overflow
+;----------------------------------------------------------
+        push    ACC
+        pushw   DP
+        movwabs WR0,0
+
+sln_loop:
+        movx    A,@DPTR         ;read char
+        jz      sln_done        ;NULL ??? done
+
+        incw    WR0
+        inc     DPTR            ;increase counter
+        cwjnz   DP,sln_loop
+
+        setb    C
+        sjmp    sln_error
+
+sln_done:
+        clr     C
+
+sln_error:
+        popw    DP
+        pop     ACC
+        ret
+
+StrUpper:
+;==========================================================
+;Convert chars in string to upper-case
+;==========================================================
+;INPUT:         DPTR = string
+;OUTPUT:        string converted to uppercase
+;----------------------------------------------------------
+        pushw   DP
+        push    ACC
+        sjmp    sup_start
+
+sup_loop:
+        inc     DPTR
+sup_start:
+        movx    A,@DPTR         ;read char
+        jz      sup_done        ;NULL ??? exit
+        cjae    A,#'z'+1,sup_loop
+        cjb     A,#'a',sup_loop
+
+        clr     C
+        subb    A,#'a'-'A'
+        movx    @DPTR,A
+        sjmp    sup_loop
+
+sup_done:
+        clr     C
+        pop     ACC
+        popw    DP
+        ret
+
+
+StrLower:
+;==========================================================
+;Convert chars in string to lower-case
+;==========================================================
+;INPUT:         DPTR = string
+;OUTPUT:        string converted to lowercase
+;----------------------------------------------------------
+        pushw   DP
+        push    ACC
+        sjmp    slo_start
+
+slo_loop:
+        inc     DPTR            ;increase counter
+
+slo_start:
+        movx    A,@DPTR         ;read char
+        jz      slo_done        ;NULL ??? exit
+        cjae    A,#'Z'+1,slo_loop
+        cjb     A,#'A',slo_loop
+
+        add     A,#'a'-'A'
+        movx    @DPTR,A
+        sjmp    slo_loop
+
+slo_done:
+        clr     C
+        pop     ACC
+        popw    DP
+        ret
+
+StrCopy:
+;==========================================================
+;Copy source string to destination string
+;==========================================================
+;INPUT:         WR0 = source string
+;               DPTR = destination string
+;OUTPUT:        source string copied to destination string
+;----------------------------------------------------------
+        pushw   DP
+        pushw   AWR0
+        push    ACC
+        push    P2
+scp_start:
+        mov     P2,R1
+scp_copy:
+        movx    A,@R0
+        movx    @DPTR,A
+        jz      scp_done
+        inc     DPTR
+        inc     R0
+        cjne    R0,#0,SCP_copy
+        inc     R1
+        sjmp    scp_start
+
+scp_done:
+        pop     P2
+        pop     ACC
+        popw    AWR0
+        popw    DP
+        clr     C
+        ret
+
+StrMoveLeft:
+;==========================================================
+;move a string 'index' positions to the left
+;==========================================================
+;INPUT:         DPTR = destination string
+;               AR0 = index
+;----------------------------------------------------------
+        pushw   DP
+        pushw   AWR0
+        pushw   AWR1
+        push    ACC
+
+        mov     A,R0
+        movwacc WR1
+        call    StrLength
+        jc      sml_overflow
+
+        mov     A,R1
+        cjnb    A,AWR1H,sml_wae         ;cwjb   WR0,WR1,sml_erase
+        mov     A,R0
+        cjnae   A,AWR1L,sml_erase       ;dissected instruction
+sml_wae:
+
+        movw    WR0,DP
+        addw    WR0,WR1
+        call    StrCopy
+        sjmp    sml_done
+
+sml_overflow:
+        setb    C
+        sjmp    sml_exit
+
+sml_erase:
+        call    StrNull
+
+sml_done:
+        clr     C
+
+sml_exit:
+        pop     ACC
+        popw    AWR1
+        popw    AWR0
+        popw    DP
+        ret
+
+
+
+StrMoveRight:
+;==========================================================
+;move a string 1 position to the right
+;==========================================================
+;INPUT:         DPTR = destination string
+;               AR0  = offset
+;               ACC  = character to insert left
+;----------------------------------------------------------
+        pushregs
+
+        mov     R7,A
+        movw    WR1,DP                  ;stringbase
+
+        movw    WR2,DP
+        addwb   WR2,R0                  ;dest low-address when done copying
+
+        push    AR0
+        call    StrLength
+        addw    DP,WR0
+        movw    WR0,DP
+        pop     ACC
+        addwacc DP
+
+smr_shift:
+        mov     P2,R1
+
+        movx    A,@R0
+        movx    @DPTR,A
+        cwje    DP,AWR2,smr_fill
+        decw    DP
+        decw    WR0
+        sjmp    smr_shift
+
+smr_fill:
+        decw    DP
+        mov     A,R7
+        movx    @DPTR,A
+        cwje    DP,AWR1,smr_done
+        sjmp    smr_fill
+
+smr_done:
+        popregs
+        clr     C
+        ret
+
+
+StrCompare:
+;==========================================================
+;Compare two strings
+;==========================================================
+;INPUT:         DPTR = first string
+;               WR0 = second string
+;OUTPUT:        C is cleared when strings are equal
+;----------------------------------------------------------
+        pushw   DP
+        pushw   AWR0
+        push    ACC
+        push    P2
+        push    AR2
+
+scmp_compare:
+        mov     P2,WR0H
+        movx    A,@DPTR
+        mov     R2,A
+        movx    A,@R0
+        cjne    A,AR2,scmp_error
+        jz      scmp_same
+
+        inc     DPTR
+        incw    WR0
+        sjmp    scmp_compare
+
+scmp_error:
+        setb    C
+        sjmp    scmp_done
+
+scmp_same:
+        clr     C
+        
+scmp_done:
+        pop     AR2
+        pop     P2
+        pop     ACC
+        popw    AWR0
+        popw    DP
+        ret
+
+StrCompareSub:
+;==========================================================
+;Compare two strings. Main string can be larger
+;==========================================================
+;INPUT:         DPTR = main string
+;               WR0 = substring
+;OUTPUT:        C=1: strings are not equal
+;               C=0: strings are equal
+;----------------------------------------------------------
+        pushw   DP                      ;save mainstring
+        pushw   AWR0                    ;save substring
+        push    ACC                     ;save acc
+        push    P2                      ;save high address port
+        push    AR2                     ;save work register
+
+scs_compare:
+        mov     P2,WR0H                 ;load addressport with high byte
+
+        movx    A,@DPTR                 ;read cmpchar from main string
+        mov     R2,A
+        movx    A,@R0                   ;read cmpchar from substring
+        jz      scs_same                ;char2 = 0 ??? string equals!
+        cjne    A,AR2,scs_error         ;error when chars are not the same
+
+        inc     DPTR                    ;chars are the same,check next
+        incw    WR0
+        sjmp    scs_compare
+
+scs_error:
+        setb    C
+        sjmp    scs_done
+
+scs_same:
+        clr     C
+        
+scs_done:
+        pop     AR2                     ;load all used registers
+        pop     P2
+        pop     ACC
+        popw    AWR0
+        popw    DP
+        ret
+
+StrPos:
+;==========================================================
+;search for the position of a string in a substring
+;==========================================================
+;INPUT:         DPTR = main string
+;               WR0 = substring
+;OUTPUT:        C = 0: substring found, WR0 = position
+;               C = 1: substring not found.
+;----------------------------------------------------------
+        pushw   DP
+        pushw   AWR1
+        pushw   AWR2
+
+        movw    WR1,DP                  ;save stringpointers
+        movw    WR2,AWR0
+
+        movw    DP,WR2
+        call    StrLength               ;check size of substring
+        cwjz    WR0,sps_invalid         ;invalid when NULL
+
+        movw    DP,WR1                  ;load stringpointers
+        movw    WR0,AWR2
+
+sps_findsub:
+        movx    A,@DPTR                 ;i
+        jz      sps_invalid
+
+        call    StrCompareSub
+        jnc     sps_valid
+        inc     DPTR
+        sjmp    sps_findsub
+
+sps_valid:
+        movw    WR0,DP
+        popw    AWR2
+        popw    AWR1
+        popw    DP
+        clr     C
+        ret
+
+sps_invalid:
+        movw    WR0,AWR1
+        popw    AWR2
+        popw    AWR1
+        popw    DP
+        setb    C
+        ret
+
+StrDelete:
+;==========================================================
+;Delete characters anywhere in a string
+;==========================================================
+;INPUT:         DPTR = string to adjust
+;               WR0 = offset in string
+;               ACC = number of chars to erase
+;----------------------------------------------------------
+        pushw   DP
+
+        push    ACC
+        addw    DP,WR0                  ;DPTR = stringbase+offset
+        pop     AR0                     ;AR0 = move index parameter
+        call    StrMoveLeft
+
+        popw    DP
+        ret
+
+
+StrConcat:
+;==========================================================
+;Concatenate (join) two strings
+;==========================================================
+;INPUT:         DPTR = destination string
+;               WR0 = string to append
+;----------------------------------------------------------
+        pushw   DP
+        pushw   AWR0
+        call    StrLength
+        addw    DP,WR0
+        popw    AWR0
+        call    StrCopy
+        popw    DP
+        ret
+
+StrInsert:
+;==========================================================
+;Insert a string into another string
+;==========================================================
+;INPUT:         DPTR = destination string
+;               WR0 = string to insert
+;               ACC = offset in string
+;OUTPUT:        string to be inserted can't be larger than 256 bytes.
+;               C will be set on overflow.
+;----------------------------------------------------------
+        pushw   DP
+        addwacc DP                      ;DPTR = stringbase+offset
+
+        pushw   AWR0
+        call    StrLength
+        popw    AWR0
+
+        popw    DP
+        ret
+
+

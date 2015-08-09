@@ -1,0 +1,199 @@
+	IFNDEF  SLIP_SRC
+SLIP_SRC	 EQU TRUE
+;**
+;**		$Filename: slip.src
+;**		$Release: 0
+;**		$Revision: 1
+;**		$Date: 24/02/2001
+;**		$Coding: Joachim Elen
+;**	 
+;**
+;**		SLIP device driver
+;**
+
+			CPU	 8051
+
+			LISTING OFF
+			INCLUDE "as.inc"
+			INCLUDE "80c152.inc"
+			INCLUDE "hardware.inc"
+			INCLUDE "macros.inc"
+			INCLUDE "malloc.src"
+			INCLUDE "include\device.inc"
+			INCLUDE	"include\message.inc"
+			LISTING ON
+
+
+;SLIP escape codes
+SLIP_FEND			EQU	0C0h				;Frame END
+SLIP_FESC			EQU	0DBh				;Frame ESCape
+SLIP_TFEND			EQU	0DCh				;Transpose Frame END
+SLIP_TFESC			EQU	0DDh				;Transpose Frame ESCape
+
+			SEGMENT	DATA
+SLIP_framesize	db	?						;framesize in number of 256 byte blocks
+SLIP_rframe		db	?
+SLIP_rfsize		db	?,?
+
+
+			SEGMENT BITDATA
+SLIP_ROPEN		db	?					;receiving a frame
+SLIP_RESC		db	?					;set during frame escapes
+
+			SEGMENT CODE
+
+
+
+;-------------------------------------------------------------------------
+			PROC	slip_read
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;
+;SLIP_ROPEN	is set when a frame is allocated
+;SLIP_rframe is pointer to the allocated memory (low byte is always NULL)
+;SLIP_rfsize is pointre to the buffer position to write char to
+;-------------------------------------------------------------------------
+			call	lsc_read
+			jc		$$z
+
+			jnb		SLIP_ROPEN,$$b
+
+$$a			cjne	A,#SLIP_FEND,$$c
+			mov		A,SLIP_rfsize+H
+			orl		A,SLIP_rfsize+L
+			jz		$$z
+
+			mov		DPH,SLIP_rframe
+			mov		A,SLIP_rfsize+H
+			inc		A
+			call	mem_resize
+
+			mov		DPH,SLIP_rframe
+			mov		DPL,#0
+			mov		R0,SLIP_rfsize+H
+			mov		R1,SLIP_rfsize+L
+			mov		A,#MSG_DATA_REQUEST
+			clr		SLIP_ROPEN
+
+			pushm	DPH,DPL,AR0,AR1,ACC
+			mov		A,SLIP_framesize
+			call	mem_alloc
+			jc		$$a01
+			mov		SLIP_rframe,DPH
+			mov		SLIP_rfsize+L,#0
+			mov		SLIP_rfsize+H,#0
+			setb	SLIP_ROPEN
+			clr		SLIP_RESC
+$$a01		popm	ACC,AR1,AR0,DPL,DPH
+			clr		C
+			ret
+
+$$z			setb	C
+			ret
+
+$$b			cjne	A,#SLIP_FEND,$$z
+			mov		A,SLIP_framesize
+			call	mem_alloc
+			jc		$$z
+			mov		SLIP_rframe,DPH
+			mov		SLIP_rfsize+L,#0
+			mov		SLIP_rfsize+H,#0
+			setb	SLIP_ROPEN
+			clr		SLIP_RESC
+			jmp		$$z
+
+$$c			cjne	A,#SLIP_FESC,$$c01a
+			setb	SLIP_RESC
+			jmp		$$z
+
+$$c01a		jnb		SLIP_RESC,$$d
+			clr		SLIP_RESC
+$$c01		cjne	A,#SLIP_TFEND,$$c02
+			mov		A,#SLIP_FEND
+			jmp		$$d
+
+$$c02		cjne	A,#SLIP_TFESC,$$d
+			mov		A,#SLIP_FESC
+			jmp		$$d
+
+$$d			push	ACC
+			mov		A,SLIP_rfsize+H
+			cjne	A,SLIP_framesize,$$e01
+			pop		ACC
+			mov		DPH,SLIP_rframe
+			call	mem_free
+			clr		SLIP_ROPEN
+			jmp		$$z
+
+$$e			push	ACC
+$$e01		mov		A,SLIP_rframe
+			add		A,SLIP_rfsize+H
+			mov		DPH,A
+			mov		DPL,SLIP_rfsize+L
+			pop		ACC
+			movx	@DPTR,A
+
+			mov     A,SLIP_rfsize+L
+			cjne	A,#0FFh,$$e02
+			inc		SLIP_rfsize+H
+$$e02		inc		SLIP_rfsize+L
+			jmp		$$z
+
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	slip_write
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;-------------------------------------------------------------------------
+			cjne	A,#MSG_DATA_INDICATION,$$z
+
+			mov		A,R0						;remove empty frames
+			orl		A,R1
+			jz		$$z
+			mov		A,R0						;find last byte of frame
+			add		A,DPH
+			mov		R0,A
+			push	DPH
+			mov		DPL,#0
+			mov		A,#SLIP_FEND				;open SLIP frame
+$$a02		call	lsc_write
+			jc		$$a02
+
+$$a			mov		A,DPL
+			cjne	A,AR1,$$b
+			mov		A,DPH
+			cjne	A,AR0,$$b
+			mov		A,#SLIP_FEND				;close SLIP frame
+$$a01		call	lsc_write
+			jc		$$a01
+			pop		DPH
+			jmp		$$z
+
+$$b			movx	A,@DPTR
+$$b01		cjne	A,#SLIP_FEND,$$b02
+			mov		A,#SLIP_FESC
+$$b01a		call	lsc_write
+			jc		$$b01a
+			mov		A,#SLIP_TFEND
+			jmp		$$c
+$$b02		cjne	A,#SLIP_FEND,$$c
+			mov		A,#SLIP_FESC
+$$b02a		call	lsc_write
+			jc		$$b02a
+			mov		A,#SLIP_TFEND
+			jmp		$$c
+
+$$c		    call	lsc_write
+			jc		$$c
+			inc		DPTR
+			jmp		$$a
+
+$$z			call	mem_free
+			clr		C
+			ret
+
+			ret
+			ENDP
+
+			include	"lsc.src"
+	
+	ENDIF

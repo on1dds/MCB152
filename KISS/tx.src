@@ -1,0 +1,174 @@
+
+GetLSC_Init:
+;==========================================================
+;Standard initialisation of GetLSC while running
+;==========================================================
+        movw    tx_writedata,tx_writeframe
+        addwabs tx_writedata,2
+        movwabs tx_framelen,0
+        call    OpenKISSFrame
+        ret
+
+GetLSC:
+;==========================================================
+;[S-INT]:read KISS-frames and store in GSC/TX-buffer
+;==========================================================
+;processes KISS-frames in real-time and stores them as raw
+;in a TX-buffer.  GetLSC() is called every time a byte
+;drops in on the serial port.
+;----------------------------------------------------------
+        jnb      RI,GL_exit             ;ONLY process when RI is set
+        pushstate
+        push    AR0
+
+        call    GetKISSbyte
+        jc      GL_done
+
+        mov     R0,A
+        pushret GL_done
+        mov     A,R0
+        jbc     KF_GETTYP,GL_GetFType   ;get frame type
+        jb      KF_DFRAME,GL_PutTXBuf   ;put KISS-data into TX-buffer
+        jb      KF_CFRAME,GL_HandleCmd  ;handle command frame
+        ret
+
+GL_done:
+        pop     AR0
+        popstate
+
+GL_exit:reti
+
+
+GL_PutTXBuf:
+;==========================================================
+;store KISS-dataframes into TX-buffer
+;==========================================================
+        mov     R0,tx_framelenH
+        cjae    R0,#HIGH(MAXFRAMESIZE)+1,GLptx_overflow
+        movw    DP,tx_writedata
+        movx    @DPTR,A
+        inc     DPTR
+        movw    tx_writedata,DP
+        incw    tx_framelen
+GLptx_done:
+        ret
+
+GLptx_overflow:
+        jmp     GetLSC_Init
+
+
+GL_GetFType:
+;==========================================================
+;a frame is opened, determine frame type
+;==========================================================
+        mov     kiss_command,A          ;save command
+        cjne    A,#KC_DATAFRAME,GLft_cmdframe
+
+GLft_dataframe:
+        mov     A,tx_framecount         ;maximum 255 TX-frames
+        cje     A,#255,GLft_done
+
+        mov     A,tx_allocatedH         ;check for buffer full
+        cjae    A,#HIGH(TXB_sizeof-((MAXFRAMESIZE+1)*2)),GLft_done
+
+        pbset   LED_GETLSC
+        setb    KF_DFRAME
+        ret
+
+GLft_cmdframe:
+        setb    KF_CFRAME
+
+GLft_done:
+        ret
+
+GL_HandleCmd:
+;==========================================================
+;process KISS Commands
+;==========================================================
+;following KISS commands are recognised:
+;FEND-01-xx-FEND     :xx=TX-DELAY
+;FEND-02-xx-FEND     :xx=PERSISTANCE
+;FEND-03-xx-FEND     :xx=SLOTTIME
+;FEND-04-xx-FEND     :xx=TX-TAIL
+;FEND-06-xx-FEND     :xx=SETHARDWARE (SEE BELOW)
+;---------------------------------------------------------
+        mov     R0,kiss_command
+        cje     R0,#KC_TXDELAY ,GL_TXDelay
+        cje     R0,#KC_PERSIST ,GL_Persist
+        cje     R0,#KC_SLOTTIME,GL_Slottime
+        cje     R0,#KC_TXTAIL  ,GL_TXTail
+        cje     R0,#KC_HARDWARE,GL_Hardware
+        clr     KF_CFRAME               ;KISS-command not implemented
+        ret
+
+
+GL_TXDelay:
+;----------------------------------------------------------
+;TXDELAY is the timeunits (of 10ms) to wait to go in TX
+;after pushing PTT.
+;----------------------------------------------------------
+        mov     kiss_txdelay,A          ;set TX-Delay
+        clr     KF_CFRAME
+        ret
+
+GL_Persist:
+;----------------------------------------------------------
+;The TNC generates a random number just before it wants
+;to push PTT to go in TX. If the generated number is bigger
+;than the value defined by PERSISTANCE, it waits SLOTTIME
+;timeunits (of 10ms) whereafter the procedure restarts.
+;If the generated number was smaller or equal, TNC goes TX.
+;----------------------------------------------------------
+        mov     kiss_persist,A          ;set Persistance
+        clr     KF_CFRAME
+        ret
+
+GL_Slottime:
+;----------------------------------------------------------
+;for info, see the PERSISTANCE specifications above.
+;----------------------------------------------------------
+        mov     kiss_slottime,A         ;set Slottime
+        clr     KF_CFRAME
+        ret
+
+GL_TXTail:
+;----------------------------------------------------------
+;TXTAILS defines the number of timeunits (of 10ms) before
+;releasing PTT after sending packets.
+;----------------------------------------------------------
+        mov     kiss_txtail,A           ;set TXTail
+        clr     KF_CFRAME
+        ret
+
+GL_Hardware:
+;----------------------------------------------------------
+;SETHARDWARE is a standard KISS parameter, which can be
+;used by each TNC for custom purpose.
+;
+;FEND-06-'R'-FEND :ColdReboot TNC
+;FEND-06-'r'-FEND :WarmReboot TNC
+;----------------------------------------------------------
+        cje     A,#'R',GLsh_coldreboot
+        cje     A,#'r',GLsh_warmreboot
+
+GLsh_done:
+        clr     KF_CFRAME               ;don't process further data
+        ret
+
+GLsh_warmreboot:
+;----------------------------------------------------------
+;after warmreboot the TNC will restart the ON-RAM KISS-TNC
+;----------------------------------------------------------
+        setb    DB_WARMREBOOT
+        clr     KF_CFRAME
+        ret
+
+GLsh_coldreboot:
+;----------------------------------------------------------
+;after coldreboot the TNC will return to the ON-ROM
+;upload routine.
+;----------------------------------------------------------
+        setb    DB_COLDREBOOT           ;Reboot
+        clr     KF_CFRAME
+        ret
+

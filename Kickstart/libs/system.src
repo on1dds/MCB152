@@ -1,0 +1,243 @@
+
+GSCClearRFIFO:
+;==========================================================
+;clear GSC-RFIFO
+;==========================================================
+        jnb     RFNE,GCR_done           ;check RFNE bit
+        mov     A,RFIFO                 ;read RFIFO if set
+        sjmp    GSCClearRFIFO
+GCR_done:
+        clr     OVR                     ;clear buffer overrun
+        ret
+
+
+Delay:
+;==========================================================
+;Delay in units of 10msec.
+;==========================================================
+;INPUT:         ACC    = units of 10msec to delay
+;----------------------------------------------------------
+        jz      DLT_exit
+        anl     TMOD,#11110000b
+        orl     TMOD,#00000001b
+
+DLT_loop:
+        clr     TF0
+        clr     TR0
+        mov     TH0,#HIGH -9204          ;CLOCKTICKS/(12*1000/10)
+        mov     TL0,#LOW -9204
+        setb    TR0
+        jnb     TF0,$
+        djnz    ACC,DLT_loop
+DLT_exit:
+        ret
+
+ReadEPROM:
+;==========================================================
+;read a byte in EPROM
+;==========================================================
+        cplmem
+        clr     A
+        movc    A,@A+DPTR
+        cplmem
+        ret
+
+ReadCRAM:
+;==========================================================
+;reads a byte in CODE memory
+;==========================================================
+        cplmem
+        movx    A,@DPTR
+        cplmem
+        ret
+
+WriteCRAM:
+;==========================================================
+;writes a byte in CODE memory
+;==========================================================
+        cplmem
+        movx    @DPTR,A
+        cplmem
+        ret
+
+FlashLED:
+;==========================================================
+;LED-flasher
+;==========================================================
+;INPUT:         WR0    = waittimer
+;----------------------------------------------------------
+        cplmem
+        djnz    R0,$
+        cplmem
+        ret
+
+
+Hang:
+;==========================================================
+;Routine to hang MCB152,only a hardreset will help!
+;==========================================================
+        clr     A
+        mov     IE,A
+        cplmem
+        jmp     $
+
+ClearXRAM:
+;==========================================================
+;clear the entire XRAM
+;==========================================================
+;INPUT:         ACC    = value to fill all bytes with
+;----------------------------------------------------------
+        pushw   DP
+        push    AR0
+        push    AR1
+        mov     DPTR,#0                     ;setup all parameters
+        mov     R0,#0
+        mov     R1,#0
+
+cm_erase:
+        movx    @DPTR,A                     ;clear datamemory
+        inc     DPTR
+        djnz    R0,cm_erase
+        djnz    R1,cm_erase
+
+        pop     AR1
+        pop     AR0
+        popw    DP
+        ret
+
+ClearCHIP:
+;==========================================================
+;clear on-chip memory
+;==========================================================
+;the entire on-chip is cleared here. The only exception is
+;the last address on the stack. This is to be able to return
+;to the calling routine. This routine must only be called
+;from the main routine, not from a subroutine, otherwise
+;the program will crash.
+;----------------------------------------------------------
+        pop     AR2
+        pop     AR1
+        mov     R3,SP
+        clr     A
+        mov     R0,#-1
+cc_erase:
+        mov     @R0,A
+        dec     R0
+        cjne    R0,#3,cc_erase
+
+        mov     SP,R3
+        push    AR1
+        push    AR2
+        mov     R0,A
+        mov     R1,A
+        mov     R2,A
+        mov     R3,A
+        ret
+
+CopyMemXC:
+;==========================================================
+;Copy memoryblock from program to external-memory
+;==========================================================
+;INPUT:         DPTR = sourceblock in cram
+;               WR0 = destination address in xram
+;               WR1 = blocksize
+;----------------------------------------------------------
+        pushw   DP
+        pushw   AWR0
+        pushw   AWR1
+        push    ACC
+
+        cwjz    WR1,cmxc_done
+
+cmxc_copy:
+        mov     P2,R1
+        clr     A
+        movc    A,@A+DPTR
+        movx    @R0,A
+        incw    WR0
+        inc     DPTR
+        dwjnz   WR1,cmxc_copy
+
+cmxc_done:
+        pop     ACC
+        popw    AWR1
+        popw    AWR0
+        popw    DP
+        clr     C
+        ret
+
+CopyMemXX:
+;==========================================================
+;Copy memoryblock from program to external-memory
+;==========================================================
+;INPUT:         DPTR = sourceblock in cram
+;               WR0 = destination address in xram
+;               WR1 = blocksize
+;----------------------------------------------------------
+        pushw   DP
+        pushw   AWR0
+        pushw   AWR1
+        push    ACC
+
+        cwjz    WR1,cmxx_done
+
+cmxx_copy:
+        mov     P2,R1
+        movx    A,@DPTR
+        movx    @R0,A
+        incw    WR0
+        inc     DPTR
+        dwjnz   WR1,cmxx_copy
+
+cmxx_done:
+        pop     ACC
+        popw    AWR1
+        popw    AWR0
+        popw    DP
+        clr     C
+        ret
+
+
+CompareMemXX:
+;==========================================================
+;Compare 2 memoryblocks in data ram
+;==========================================================
+;INPUT:         DPTR = sourceblock in dram
+;               WR0 = destination address in dram
+;               WR1 = blocksize
+;----------------------------------------------------------
+        push    ACC
+        pushw   DP
+        pushw   AWR0
+        pushw   AWR1
+        push    B
+
+        clr     C
+        cwjz    WR1,CM2X_eq
+
+CM2X_copy:
+        movx    A,@DPTR
+        mov     B,A
+        mov     P2,WR0H
+        movx    A,@R0
+        cjne    A,B,CM2X_noteq
+
+        incw    WR0
+        inc     DPTR
+        dwjnz   WR1,CM2X_copy
+
+CM2X_eq:clr     C
+        sjmp    CM2X_done
+
+CM2X_noteq:
+        setb    C
+
+CM2X_done:
+        pop     B
+        popw    AWR1
+        popw    AWR0
+        popw    DP
+        pop     ACC
+        ret
+
+

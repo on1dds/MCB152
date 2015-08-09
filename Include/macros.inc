@@ -1,6 +1,5 @@
-        IF (MACROS_INC)
-        ELSE
-MACROS_INC      SET     1
+        IFNDEF  MACROS_INC
+MACROS_INC      EQU     1
 ;**
 ;**     $Filename: macros.inc
 ;**     $Release: 1
@@ -8,18 +7,12 @@ MACROS_INC      SET     1
 ;**     $Date: 10/01/1998
 ;**
 ;**     8052 Instruction extension
+;**     adjusted for Macro Assembler
 ;**
 ;**     Coded by Joachim Elen
 ;**
 
-;----------------------------------------------------------
-;
-;       Internal Macro Counters
-;
-;----------------------------------------------------------
-RSET    MACRO   label,val
-label   SET     label+val
-        ENDM
+
 
 ;----------------------------------------------------------
 ;
@@ -38,8 +31,9 @@ VOIDINT MACRO   vector
         ENDM
 
 SETCODE MACRO   prog,address
-prog    CODE    address
+prog    LABEL   address
         ENDM
+
 
 
 ;------ Structure management for on-chip memory
@@ -50,11 +44,11 @@ ACOUNT  SET     base
 
 BITDEF  MACRO   label
 label   BIT     ACOUNT
-        RSET    ACOUNT,1
+ACOUNT  SET     ACOUNT+1
         ENDM
 
 BITSKIP MACRO
-        RSET    ACOUNT,1
+ACOUNT  SET     ACOUNT+1
         ENDM
 
 STRUCTURE MACRO base
@@ -66,37 +60,37 @@ label   EQU     ACOUNT
         ENDM
 
 APTR    MACRO   addr
-addr    DATA    ACOUNT
-addr&L  DATA    ACOUNT+0
-addr&H  DATA    ACOUNT+1
-        RSET    ACOUNT,2
+addr    SFR     ACOUNT
+{"addr"}L  SFR  ACOUNT+0
+{"addr"}H  SFR  ACOUNT+1
+ACOUNT  SET     ACOUNT+2
         ENDM
 
 UWORD   MACRO   wdat     
-wdat    DATA    ACOUNT
-wdat&L  DATA    ACOUNT+0
-wdat&H  DATA    ACOUNT+1
-        RSET    ACOUNT,2
+wdat    SFR     ACOUNT
+{"wdat"}L  SFR  ACOUNT+0
+{"wdat"}H  SFR  ACOUNT+1
+ACOUNT  SET     ACOUNT+2
         ENDM
 
 BYTE    MACRO   bdat
-bdat    DATA    ACOUNT
-        RSET    ACOUNT,1
+bdat    SFR     ACOUNT
+ACOUNT  SET     ACOUNT+1
         ENDM
 
 UBYTE   MACRO   bdat
-bdat    DATA    ACOUNT
-        RSET    ACOUNT,1
+bdat    SFR     ACOUNT
+ACOUNT  SET     ACOUNT+1
+        ENDM
+
+BBYTE   MACRO   bdat
+bdat    SFRB    ACOUNT
+ACOUNT  SET     ACOUNT+1
         ENDM
 
 BOOL    MACRO   bdat
-bdat    DATA    ACOUNT
-        RSET    ACOUNT,1
-        ENDM
-
-STRUCT  MACRO   sdat,sizeof
-sdat    DATA    ACOUNT
-        RSET    ACOUNT,sizeof
+bdat    SFR     ACOUNT
+ACOUNT  SET     ACOUNT+1
         ENDM
 
 ;------ Structure Managemen for XDATA memory
@@ -105,10 +99,10 @@ XSTRUCTURE MACRO base
 XACOUNT SET     base
         ENDM
 
-XSTRUCT MACRO   struc,label,sizeof
-label   SET     sizeof
-struc   XDATA   XACOUNT
-        RSET    XACOUNT,sizeof
+XSTRUCT MACRO   struc,lbl,sizeof
+{"lbl"} SET     sizeof
+struc   LABEL   XACOUNT
+XACOUNT SET     XACOUNT+sizeof
         ENDM
 
 
@@ -118,62 +112,61 @@ struc   XDATA   XACOUNT
 ;
 ;----------------------------------------------------------
 
+
 ;------ Data Transfer
 
-MOVA    MACRO   dest,source
+pushm   MACRO   reg
+            push    reg
+        IF ARGCOUNT>1
+            SHIFT
+            pushm   ALLARGS
+        ENDIF
+        ENDM
+
+popm    MACRO   reg
+            pop     reg
+        IF ARGCOUNT>1
+            SHIFT
+            popm    ALLARGS
+        ENDIF
+        ENDM
+
+mova    MACRO   dest,source
         mov     A,source
         mov     dest,A
         ENDM
 
-MOVS    MACRO   dest,source
+movs    MACRO   dest,source
         push    source
         pop     dest
         ENDM
 
-EXG     MACRO   ea1,ea2
+exg     MACRO   ea1,ea2
         push    ea1
         push    ea2
         pop     ea1
         pop     ea2
         ENDM
 
-PUSHSTATE MACRO 
-        push    PSW
-        pushw   DP
-        push    ACC
+pushstate MACRO
+        pushm   PSW,DPH,DPL,ACC
         ENDM
 
-POPSTATE MACRO 
-        pop     ACC
-        popw    DP
-        pop     PSW
+popstate MACRO
+        popm    ACC,DPL,DPH,PSW
         ENDM
 
-PUSHREGS MACRO 
-        push    AR0
-        push    AR1
-        push    AR2
-        push    AR3
-        push    AR4
-        push    AR5
-        push    AR6
-        push    AR7
+pushregs MACRO
+        pushm   AR0,AR1,AR2,AR3,AR4,AR5,AR6,AR7
         ENDM
 
-POPREGS MACRO 
-        pop     AR7
-        pop     AR6
-        pop     AR5
-        pop     AR4
-        pop     AR3
-        pop     AR2
-        pop     AR1
-        pop     AR0
+popregs MACRO
+        popm    AR7,AR6,AR5,AR4,AR3,AR2,AR1,AR0
         ENDM
 
 ;------ Arthemetic Operations
 
-ADDA    MACRO   dest,source
+adda    MACRO   dest,source
         push    ACC
         mov     A,dest
         add     A,source
@@ -181,7 +174,8 @@ ADDA    MACRO   dest,source
         pop     ACC
         ENDM
 
-SUBBA   MACRO   dest,source
+
+subba   MACRO   dest,source
         push    ACC
         mov     A,dest
         subb    A,source
@@ -191,88 +185,114 @@ SUBBA   MACRO   dest,source
 
 ;------ Program Branching
 
-LCJNE   MACRO   reg,num,label
-        cjne    reg,num,$+5
-        sjmp    $+5
-        ljmp    label
+lcjne   MACRO   reg,num,label
+        cjne    reg,num,$$jmp
+        jmp     $$done
+$$jmp:  jmp     label
+$$done:
         ENDM
 
 
-JE      MACRO   label
+je      MACRO   label
         jnc     label
         ENDM
 
-JNE     MACRO   label
+
+jne     MACRO   label
         jc      label
         ENDM
 
-LCJE    MACRO   reg,num,label
-        cjne    reg,num,$+6
-        ljmp    label
+
+cje     MACRO   reg,num,label
+        cjne    reg,num,$$done
+        jmp     label
+$$done:
         ENDM
 
-CJE     MACRO   reg,num,label           ;reg=num
-        cjne    reg,num,$+5
+
+
+;-----------------------------
+; ABOVE                 >
+; NOT BELOW OR EQUAL    NOT <=
+;-----------------------------
+
+
+cja     MACRO   reg,num,label           ;reg>num
+        cjne    reg,num,$$ab
+        sjmp    $$be
+$$ab:   jnc     label
+$$be:
+        ENDM
+
+cjnbe   MACRO   reg,num,label
+        cja     reg,num,label
+        ENDM
+
+;-----------------------------
+; ABOVE OR EQUAL        >=
+; NOT BELOW             NOT <
+;-----------------------------
+
+
+cjae    MACRO   reg,num,label           ;reg>=num
+        cjne    reg,num,$$ab
+$$eq    jmp     label
+$$ab    jnc     label
+        ENDM
+
+
+cjnb    MACRO   reg,num,label
+        cjae    reg,num,label
+        ENDM
+
+;-----------------------------
+; BELOW                 <
+; NOT ABOVE OR EQUAL    NOT >=
+;-----------------------------
+
+
+cjb     MACRO   reg,num,label           ;reg<num
+        cjne    reg,num,$$ab
+$$eq:   sjmp    $$done
+$$ab:   jc      label
+$$done:
+        ENDM
+
+cjnae   MACRO   reg,num,label
+        cjb     reg,num,label
+        ENDM
+
+;-----------------------------
+; BELOW OR EQUAL        <=
+; NOT ABOVE             NOT >
+;-----------------------------
+
+cjbe    MACRO   reg,num,label           ;reg<=num
+        cjne    reg,num,$$ab
         sjmp    label
-        ENDM
-
-CJA     MACRO   reg,num,label           ;reg>num
-        cjne    reg,num,$+5
-        sjmp    $+4
-        jnc     label
-        ENDM
-
-CJNA    MACRO   reg,num,label           ;reg!>num
-        cjne    reg,num,$+5
-        sjmp    label
-        jc      label
-        ENDM
-
-CJAE    MACRO   reg,num,label           ;reg>=num
-        cjne    reg,num,$+3
-        jnc     label
-        ENDM
-
-CJNAE   MACRO   reg,num,label           ;reg!>=num
-        cjne    reg,num,$+3
-        jc      label
-        ENDM
-
-CJB     MACRO   reg,num,label           ;reg<num
-        cjne    reg,num,$+3
-        jc      label
-        ENDM
-
-CJNB    MACRO   reg,num,label           ;reg!<num
-        cjne    reg,num,$+3
-        jnc     label
-        ENDM
-
-CJBE    MACRO   reg,num,label           ;reg<=num
-        cjne    reg,num,$+5
-        sjmp    label
-        jc      label
-        ENDM
-
-CJNBE   MACRO   reg,num,label           ;reg!<=num
-        cjne    reg,num,$+5
-        sjmp    $+4
-        jnc     label
+$$ab    jc      label
+$$done:
         ENDM
 
 
-CJNR    MACRO   reg,top,bot,label
+
+;-----------------------------
+; NOT IN RANGE
+; RANGE
+;-----------------------------
+
+cjnr    MACRO   reg,top,bot,label
         cja     reg,top,label
         cjb     reg,bot,label
         ENDM
 
-CJR     MACRO   reg,top,bot,label
+cjr     MACRO   reg,top,bot,label
         cja     reg,bot,label
         cjb     reg,top,label
         ENDM
 
 
-PUSHRET MACRO   address
+pushret MACRO   address
         mov     A,#LOW(address)
         push    ACC
         mov     A,#HIGH(address)
@@ -289,331 +309,457 @@ PUSHRET MACRO   address
 
 ;------ Data Transfer
 
-MOVWABS MACRO   dest,value
-        mov     dest&L,#LOW(value)
-        mov     dest&H,#HIGH(value)
+clrw    MACRO   dest
+        mov     {"dest"}H,#0
+        mov     {"dest"}L,#0
         ENDM
 
-MOVW    MACRO   dest,source
-        mov     dest&H,source&H
-        mov     dest&L,source&L
+        
+movw    MACRO   dest,src
+        IF  (SUBSTR("src",0,1)="#") && (STRLEN("src")>1)
+
+$$__OFFS    SET SUBSTR("src",1,0)
+            mov     {"dest"}L,#LOW({$$__OFFS})
+            mov     {"dest"}H,#HIGH({$$__OFFS})
+
+        ELSEIF
+            mov     {"dest"}H,{"src"}H
+            mov     {"dest"}L,{"src"}L
+        ENDIF
         ENDM
 
-MOVWACC MACRO   dest
-        mov     dest&L,A
-        mov     dest&H,#0
+movwacc MACRO   dest
+        mov     {"dest"}L,A
+        mov     {"dest"}H,#0
         ENDM
 
-MOVWB   MACRO   wdest,bsrc
-        mov     wdest&L,bsrc
-        mov     wdest&H,#0
+movwb   MACRO   wdest,bsrc
+        mov     {"wdest"}L,bsrc
+        mov     {"wdest"}H,#0
         ENDM
 
-MOVWC   MACRO   dest
+movwc   MACRO   dest
         push    ACC
         clr     A
         movc    A,@A+DPTR
         push    ACC
         mov     A,#1
         movc    A,@A+DPTR
-        mov     dest&L,A
+        mov     {"dest"}L,A
         pop     ACC
-        mov     dest&H,A
+        mov     {"dest"}H,A
         pop     ACC
         ENDM
 
-MOVWCX  MACRO   dest,source
-        pushw   DP
-        movw    DP,source
-        movx    A,@DPTR
-        mov     dest&L,A
-        inc     DPTR
-        movx    A,@DPTR
-        mov     dest&H,A
-        popw    DP
+
+movwx   MACRO   dest,src
+        IF  (SUBSTR("dest",0,5)="@DPTR")
+            push    DPL                     ;keep DPTR intact!
+            push    DPH
+            IF STRLEN("dest")>5             ;add offset ?
+$$__OFFS        SET substr("dest",6,0)      ;extract offset (no '+' check)
+                mov     A,DPL               ;compute dest address 
+                add     A,#low({$$__OFFS})
+                mov     DPL,A
+                mov     A,DPH
+                addc    A,#high({$$__OFFS})
+                mov     DPH,A
+            ENDIF
+            push    ACC                     ;do data transfer
+            mov     A,{"src"}L
+            movx    @DPTR,A
+            inc     DPTR
+            mov     A,{"src"}H
+            movx    @DPTR,A
+            pop     ACC
+            pop     DPH                     ; restore DPTR when ofsetted
+            pop     DPL
+    
+        ELSEIF  (SUBSTR("src",0,5)="@DPTR")
+            push    DPL                     ;keep DPTR intact!
+            push    DPH
+            IF  STRLEN("src")>5        ; add offset ?
+$$__OFFS        SET     substr("src",6,0)   ;extract offset (no '+' check)
+                mov     A,DPL               ;compute dest address 
+                add     A,#low({$$__OFFS})
+                mov     DPL,A
+                mov     A,DPH
+                addc    A,#high({$$__OFFS})
+                mov     DPH,A
+            ENDIF
+            push    ACC                     ;do data transfer
+            movx    A,@DPTR
+            mov     {"dest"}L,A
+            inc     DPTR
+            movx    A,@DPTR
+            mov     {"dest"}H,A
+            pop     ACC
+            pop     DPH                    ; restore DPTR when done
+            pop     DPL
+    
+        ELSEIF
+            error   "??? movwx: unsupported addressingmode"
+        ENDIF
         ENDM
 
-MOVWXC  MACRO   dest,source
+
+movwxabs MACRO   dest,source
         pushw   DP
         movw    DP,dest
-        mov     A,source&L
+        mov     A,#HIGH({"source"}L)
         movx    @DPTR,A
         inc     DPTR
-        mov     A,source&H
+        mov     A,#HIGH({"source"}H)
         movx    @DPTR,A
         popw    DP
         ENDM
 
-MOVWXABS MACRO   dest,source
-        pushw   DP
-        movw    DP,dest
-        mov     A,#HIGH(source&L)
-        movx    @DPTR,A
-        inc     DPTR
-        mov     A,#HIGH(source&H)
-        movx    @DPTR,A
-        popw    DP
+clrwx   MACRO   dest
+        IF upstring("dest")="@DPTR"
+            push    ACC
+            pushw   DP
+            clr     A
+            movx    @DPTR,A
+            inc     DPTR
+            movx    @DPTR,A
+            popw    DP
+            pop     ACC
+        ENDIF
         ENDM
 
-CLRWX   MACRO   dest
-        pushw   DP
-        movw    DP,dest
-        clr     A
-        movx    @DPTR,A
-        inc     DPTR
-        movx    @DPTR,A
-        popw    DP
+pushw   MACRO   word
+        push    {"word"}L
+        push    {"word"}H
         ENDM
 
-PUSHW   MACRO   word
-        push    word&L
-        push    word&H
+popw    MACRO   word
+        pop     {"word"}H
+        pop     {"word"}L
         ENDM
 
-POPW    MACRO   word
-        pop     word&H
-        pop     word&L
-        ENDM
-
-XCHW    MACRO   word1,word2
-        pushw   word1
-        pushw   word2
-        popw    word1
-        popw    word2
+xchw    MACRO   word1,word2
+        pushw   {"word1"}
+        pushw   {"word2"}
+        popw    {"word1"}
+        popw    {"word2"}
         ENDM
 
 
 ;------ Program Branching
 
-CWJZ    MACRO   word,label
-        mov     A,word&H
-        jnz     $+9
-        mov     A,word&L
-        jnz     $+5
-        ljmp    label
+cwjz    MACRO   word,label
+        mov     A,{"word"}H
+        orl     A,{"word"}L
+        jz      label
         ENDM
 
-CWJNZ   MACRO   word,label
-        mov     A,word&H
-        jnz     label
-        mov     A,word&L
+cwjnz   MACRO   word,label
+        mov     A,{"word"}H
+        orl     A,{"word"}L
         jnz     label
         ENDM
 
-CWJNE   MACRO   word1,word2,label
-        mov     A,word1&H
-        cjne    A,word2&H,label
-        mov     A,word1&L
-        cjne    A,word2&L,label
+cwjne   MACRO   word1,word2,label
+        mov     A,{"word1"}H
+        cjne    A,{"word2"}H,label
+        mov     A,{"word1"}L
+        cjne    A,{"word2"}L,label
         ENDM
 
-CWJE    MACRO   word1,word2,label
-        mov     A,word1&H
-        cjne    A,word2&H,$+10
-        mov     A,word1&L
-        cjne    A,word2&L,$+5
+cwje    MACRO   word1,word2,label
+        mov     A,{"word1"}H
+        cjne    A,{"word2"}H,$+10
+        mov     A,{"word1"}L
+        cjne    A,{"word2"}L,$+5
         sjmp    label
         ENDM
 
-CWJAE   MACRO   word,val,label
-        mov     A,word&H
-        cjne    A,val&H,$+8
-        mov     A,word&L
-        cjne    A,val&L,$+3
+cwjeabs MACRO   word1,val,label
+        mov     A,{"word1"}H
+        cjne    A,#HIGH(val),$+10
+        mov     A,{"word1"}L
+        cjne    A,#LOW(val),$+5
+        sjmp    label
+        ENDM
+
+
+cwjaeabs MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,#HIGH(val),$+10
+        mov     A,{"word"}L
+        cjne    A,#LOW(val),$+5
+        sjmp    label
         jnc     label
         ENDM
 
-CWJNAE  MACRO   word,val,label
-        mov     A,word&H
-        cjne    A,val&H,$+8
-        mov     A,word&L
-        cjne    A,val&L,$+3
-        jc      label                   ;jump if lower
-        ENDM
-
-CWJB    MACRO   word,val,label
-        mov     A,word&H
-        cjne    A,val&H,$+8
-        mov     A,word&L
-        cjne    A,val&L,$+3
-        jc      label                   ;jump if lower
-        ENDM
-
-CWJNB   MACRO   word,val,label
-        mov     A,word&H
-        cjne    A,val&H,$+8
-        mov     A,word&L
-        cjne    A,val&L,$+3
-        jnc     label
-        ENDM
-
-
-CWJNBABS MACRO  word,val,label
-        mov     A,word&H
-        cjne    A,#HIGH(val),$+3
-        jc      $+12
-        mov     A,word&L
-        cjne    A,#LOW(val),$+3
-        jc      $+5
-        ljmp    label
-        ENDM
-
-
-
-CWJBABS MACRO   word,val,label
-        mov     A,word&H
-        cjne    A,#HIGH(val),$+3
-        jnc     label    
-        mov     A,word&L
-        cjne    A,#LOW(val),$+3
+cwjbeabs MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,#HIGH(val),$+10
+        mov     A,{"word"}L
+        cjne    A,#LOW(val),$+5
+        sjmp    label
         jc      label
         ENDM
 
-CWJAEABS MACRO  word,val,label
-        mov     A,word&H
-        cjne    A,#HIGH(val),$+3
-        jc      $+12
-        mov     A,word&L
-        cjne    A,#LOW(val),$+3
-        jc      $+5
-        ljmp    label
+cwjbabs MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,#HIGH(val),$+12
+        sjmp    $+11
+        mov     A,{"word"}L
+        cjne    A,#LOW(val),$+5
+        sjmp    $+4
+        jc      label                   ;jump if lower
         ENDM
 
-CWJNAEABS MACRO   word,val,label
-        mov     A,word&H
-        cjne    A,#HIGH(val),$+3
-        jnc     $+9
-        mov     A,word&L
-        cjne    A,#LOW(val),$+3
-        jnc     $+5
-        ljmp    label
+cwjaabs MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,#HIGH(val),$+12
+        sjmp    $+11
+        mov     A,{"word"}L
+        cjne    A,#LOW(val),$+5
+        sjmp    $+4
+        jnc     label                   ;jump if lower
         ENDM
 
-CWJNEABS MACRO  word1,absval,label
-        mov     A,word1&H
-        cjne    A,#HIGH(absval),label
-        mov     A,word1&L
-        cjne    A,#LOW(absval),label
+cwjnbabs MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,#HIGH(val),$+10
+        mov     A,{"word"}L
+        cjne    A,#LOW(val),$+5
+        sjmp    label
+        jnc     label
         ENDM
 
-CWJEABS MACRO   word1,absval,label
-        mov     A,word1&H
-        cjne    A,#HIGH(absval),$+11
-        mov     A,word1&L
-        cjne    A,#LOW(absval),$+6
-        ljmp    label
+cwjnaabs MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,#HIGH(val),$+10
+        mov     A,{"word"}L
+        cjne    A,#LOW(val),$+5
+        sjmp    label
+        jc      label
         ENDM
 
+cwjnaeabs MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,#HIGH(val),$+12
+        sjmp    $+11
+        mov     A,{"word"}L
+        cjne    A,#LOW(val),$+5
+        sjmp    $+4
+        jc      label                   ;jump if lower
+        ENDM
 
-DWJNZ   MACRO   word,label
+cwjnbeabs MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,#HIGH(val),$+12
+        sjmp    $+11
+        mov     A,{"word"}L
+        cjne    A,#LOW(val),$+5
+        sjmp    $+4
+        jnc     label                   ;jump if lower
+        ENDM
+
+cwjae   MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,{"val"}H,$+10
+        mov     A,{"word"}L
+        cjne    A,{"val"}L,$+5
+        sjmp    label
+        jnc     label
+        ENDM
+
+cwjbe   MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,{"val"}H,$+10
+        mov     A,{"word"}L
+        cjne    A,{"val"}L,$+5
+        sjmp    label
+        jc      label
+        ENDM
+
+cwjb    MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,{"val"}H,$$bigr
+
+        mov     A,{"word"}L
+        cjne    A,{"val"}L,$$bigr
+        sjmp    $$done
+
+$$bigr: jc      label                   ;jump if lower
+$$done:
+        ENDM
+
+cwja    MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,{"val"}H,$+12
+        sjmp    $+11
+        mov     A,{"word"}L
+        cjne    A,{"val"}L,$+5
+        sjmp    $+4
+        jnc     label                   ;jump if lower
+        ENDM
+
+cwjnb   MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,{"val"}H,$+10
+        mov     A,{"word"}L
+        cjne    A,{"val"}L,$+5
+        sjmp    label
+        jnc     label
+        ENDM
+
+cwjna   MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,{"val"}H,$+10
+        mov     A,{"word"}L
+        cjne    A,{"val"}L,$+5
+        sjmp    label
+        jc      label
+        ENDM
+
+cwjnae  MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,{"val"}H,$+12
+        sjmp    $+11
+        mov     A,{"word"}L
+        cjne    A,{"val"}L,$+5
+        sjmp    $+4
+        jc      label                   ;jump if lower
+        ENDM
+
+cwjnbe  MACRO   word,val,label
+        mov     A,{"word"}H
+        cjne    A,{"val"}H,$+12
+        sjmp    $+11
+        mov     A,{"word"}L
+        cjne    A,{"val"}L,$+5
+        sjmp    $+4
+        jnc     label                   ;jump if lower
+        ENDM
+
+dwjnz   MACRO   word,label
         decw    word
-        mov     A,word&H
-        jnz     label
-        mov     A,word&L
-        jnz     label
+        cwjnz   word,label
         ENDM
 
-DWJNE   MACRO   word,val,label
+dwjne   MACRO   word,val,label
         decw    word
-        mov     A,word&H
+        mov     A,{"word"}H
         cjne    A,#HIGH val,label
-        mov     A,word&L
+        mov     A,{"word"}L
         cjne    A,#LOW val,label
         ENDM
 
 
 ;------ Arthemetic Operations
 
-SUBWABS MACRO   dest,source
-        mov     A,dest&L
+subwabs MACRO   dest,source
+        mov     A,{"dest"}L
         clr     C
         subb    A,#LOW(source)
-        mov     dest&L,A
-        mov     A,dest&H
+        mov     {"dest"}L,A
+        mov     A,{"dest"}H
         subb    A,#HIGH(source)
-        mov     dest&H,A
+        mov     {"dest"}H,A
         ENDM
 
-SUBW    MACRO   dest,source
-        mov     A,dest&L
+subw    MACRO   dest,source
+        mov     A,{"dest"}L
         clr     C
-        subb    A,source&L
-        mov     dest&L,A
-        mov     A,dest&H
-        subb    A,source&H
-        mov     dest&H,A
+        subb    A,{"source"}L
+        mov     {"dest"}L,A
+        mov     A,{"dest"}H
+        subb    A,{"source"}H
+        mov     {"dest"}H,A
         ENDM
 
-SUBBW   MACRO   dest,source
-        mov     A,dest&L
-        subb    A,source&L
-        mov     dest&L,A
-        mov     A,dest&H
-        subb    A,source&H
-        mov     dest&H,A
+subbw   MACRO   dest,source
+        mov     A,{"dest"}L
+        subb    A,{"source"}L
+        mov     {"dest"}L,A
+        mov     A,{"dest"}H
+        subb    A,{"source"}H
+        mov     {"dest"}H,A
         ENDM
 
-ADDWABS MACRO   dest,source
-        mov     A,dest&L
-        add     A,#LOW(source)
-        mov     dest&L,A
-        mov     A,dest&H
-        addc    A,#HIGH(source)
-        mov     dest&H,A
+addwabs MACRO   dest,source
+        IF  source<>0
+            mov     A,{"dest"}L
+            add     A,#LOW(source)
+            mov     {"dest"}L,A
+            mov     A,{"dest"}H
+            addc    A,#HIGH(source)
+            mov     {"dest"}H,A
+        ENDIF
         ENDM
 
-ADDW    MACRO   dest,source
-        mov     A,dest&L
-        add     A,source&L
-        mov     dest&L,A
-        mov     A,dest&H
-        addc    A,source&H
-        mov     dest&H,A
+addw    MACRO   dest,source
+        mov     A,{"dest"}L
+        add     A,{"source"}L
+        mov     {"dest"}L,A
+        mov     A,{"dest"}H
+        addc    A,{"source"}H
+        mov     {"dest"}H,A
         ENDM
 
-ADDCW   MACRO   dest,source
-        mov     A,dest&L
-        addc    A,source&L
-        mov     dest&L,A
-        mov     A,dest&H
-        addc    A,source&H
-        mov     dest&H,A
+addcw   MACRO   dest,source
+        mov     A,{"dest"}L
+        addc    A,{"source"}L
+        mov     {"dest"}L,A
+        mov     A,{"dest"}H
+        addc    A,{"source"}H
+        mov     {"dest"}H,A
         ENDM
 
 
-DECW    MACRO   dest
-        mov     A,dest&L
-        clr     C
-        subb    A,#1
-        mov     dest&L,A
-        mov     A,dest&H
-        subb    A,#0
-        mov     dest&H,A
+decw    MACRO   dest
+        push    ACC
+        mov     A,{"dest"}L
+        jnz     $$low
+        dec     {"dest"}H
+$$low   dec     {"dest"}L
+        pop     ACC
         ENDM
 
-INCW    MACRO   dest
-        pushw   DP
-        movw    DP,dest
-        inc     DPTR
-        movw    dest,DP
-        popw    DP
+
+negw    MACRO   dest
+
+        push    ACC
+        decw    dest
+        mov     A,{"dest"}H
+        cpl     A
+        mov     {"dest"}H,A
+        mov     A,{"dest"}L
+        cpl     A
+        mov     {"dest"}L,A
+        pop     ACC
+
         ENDM
 
-ADDWB   MACRO   dest,reg
-        mov     A,dest&L
+incw    MACRO   dest
+        push    ACC
+        mov     A,{"dest"}L
+        jnz     $$a
+        dec     {"dest"}H
+$$a     dec     {"dest"}L
+        pop     ACC
+        ENDM
+
+addwb   MACRO   dest,reg
+        mov     A,{"dest"}L
         add     A,reg
-        mov     dest&L,A
-        mov     A,dest&H
+        mov     {"dest"}L,A
+        mov     A,{"dest"}H
         addc    A,#0
-        mov     dest&H,A
+        mov     {"dest"}H,A
         ENDM
 
-ADDWACC MACRO   dest
-        add     A,dest&L
-        mov     dest&L,A
-        mov     A,dest&H
+addwacc MACRO   dest
+        add     A,{"dest"}L
+        mov     {"dest"}L,A
+        mov     A,{"dest"}H
         addc    A,#0
-        mov     dest&H,A
+        mov     {"dest"}H,A
         ENDM
 
 ;----------------------------------------------------------
@@ -622,18 +768,18 @@ ADDWACC MACRO   dest
 ;
 ;----------------------------------------------------------
 
-GETXDATA MACRO
+getxdata MACRO
         movx    A,@DPTR
         inc     DPTR
         ENDM
 
-PUTXDATA MACRO
+putxdata MACRO
         movx    @DPTR,A
         inc     DPTR
         ENDM
 
-ADDSUM  MACRO chksum,reg
-        if('reg' = 'A')
+addsum  MACRO chksum,reg
+        if(reg = "A")
             push    ACC
             add     A,chksum
             mov     chksum,A

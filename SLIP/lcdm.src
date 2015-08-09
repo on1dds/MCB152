@@ -1,0 +1,56 @@
+;==========================================================
+;PROJECT: MCB152
+;
+;==========================================================
+
+			CPU		 8051
+			BIGENDIAN	OFF
+
+			LISTING	OFF
+			INCLUDE	"as.inc"
+			INCLUDE	"80c152.inc"
+			INCLUDE	"mcb152.inc"
+			LISTING	ON
+
+
+			SEGMENT DATA
+			SEGMENT BITDATA
+			SEGMENT	CODE
+			SETINT	RESET,	0100h						;coldreboot handler
+
+;==========================================================
+;***						   ****************************
+;***   program code			  *****************************
+;***						   ****************************
+;========================================================== 
+
+			ORG	 0100h
+
+			mov		SP,#80h				;init stack
+			clr		EA					;init interrupts
+			clr		A
+			mov		IPN1,A
+			mov		IEN1,A
+			mov		IE,A
+
+			call	mem_init			;init memory management
+			call	lcd_open
+
+;=========================================
+;MAIN ROUTINE
+;=========================================
+main		mov		A,#LCD_R0
+			call	lcd_setpos
+
+			mov		DPTR,#txt_01
+			call	lcd_printc
+			jmp		main
+
+txt_01		db		"Ikke en de dikke en de olifant",0
+;device drivers
+			include	"lcd.src"
+
+;code modules
+			include	"malloc.src"		;memory management
+
+			END

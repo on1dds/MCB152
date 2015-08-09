@@ -1,0 +1,109 @@
+	IFNDEF  AX25_MULTIPLEXER_SRC
+AX25_MULTIPLEXER_SRC     EQU TRUE
+;**
+;**     $Filename: ax25lm.src
+;**     $Release: 0
+;**     $Revision: 1
+;**     $Date: 12/11/2000
+;**     $Coding: Joachim Elen
+;**     
+;**
+;**     AX.25 Link Multiplexer - Datalink sublayer
+;**
+;**		This implementation supports up to 8 active connections
+
+            CPU     8051
+
+			LISTING	OFF
+			INCLUDE	"as.inc"			;extend	pseudo instructions
+			INCLUDE	"80c152.inc"		;assign	8052 register names
+			INCLUDE	"hardware.inc"		;assign	80152 specific names
+			INCLUDE	"ascii.inc"			;assign	ASCII character	names
+			INCLUDE	"macros.inc"		;macro definitions
+			INCLUDE	"malloc.src"
+			INCLUDE	"ipc.src"
+			INCLUDE	"include\device.inc"	;device	specific definitions
+			INCLUDE	"include\message.inc"
+			LISTING	ON
+
+
+LMSID		STRUCT
+;connection identifiers
+dest		db	?,?,?,?,?,?,?,?
+digi1		db	?,?,?,?,?,?,?,?
+digi2		db	?,?,?,?,?,?,?,?
+pid			db	?,?
+
+;data link
+DL_state	db	?			;data link state
+SRT			db	?			;smoothed round trip time
+T1V			db	?			;next value for T1; default initial value is initial value of SRT
+N1			db	?,?			;max number of octets in the information field of the frame
+N2			db	?			;max number of retries permitted
+;management data link
+MDL_state	db	?
+RC			db	?			;retry count
+NM201		db	?			;maximum number of retries of the XID command
+TM201		db	?			;retry timer for management functions
+
+;segmenter/reassembler
+SG_state	db	?			;segmenter state
+RA_state	db	?			;reassembler state
+N			db	?			;number of segments remaining to be reassembled
+TR210		db	?			;time limit for receipt of next segment
+
+LMSID		ENDSTRUCT
+
+
+;States
+LM_IDLE						EQU		0
+LM_SEIZE_PENDING			EQU		1
+LM_SEIZED					EQU		2
+
+            SEGMENT DATA
+
+LM_ccnt		db		?		;connection counter
+LM_csid		db		?		;current station identifier
+
+
+            SEGMENT BITDATA
+LM_OPEN		db		?		;set when link multiplexer is opened
+
+LM_SSID0	db		?		;SSID 0 active when SET
+LM_SSID1	db		?		;SSID 1 active when SET
+LM_SSID2	db		?		;SSID 2 active when SET
+LM_SSID3	db		?		;SSID 3 active when SET
+LM_SSID4	db		?		;SSID 4 active when SET
+LM_SSID5	db		?		;SSID 5 active when SET
+LM_SSID6	db		?		;SSID 6 active when SET
+LM_SSID7	db		?		;SSID 7 active when SET
+
+
+
+
+
+
+            SEGMENT CODE
+;-------------------------------------------------------------------------
+            PROC    ax25lm_open
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;open the AX.25 link multiplexer for use
+;-------------------------------------------------------------------------
+;IN:
+;		-
+;RETURNED:
+;	PSW.C	=		SET on error
+;-------------------------------------------------------------------------
+			jb      LM_OPEN,done			;exit if already open.
+            setb    LM_OPEN					;set device open indicator
+
+
+			
+			
+			
+done		clr		C
+			ret
+			ENDP
+
+    ENDIF   ;AX25_MULTIPLEXER_SRC
+

@@ -45,7 +45,7 @@ AB_restore:
 
 ;take sample 1
 ;-------------
-        movwabs T1,13
+        movwabs T1,14
         setb    TR1
         jb      TF1,AB_restore  ;restart on timer overflow.
         jnb     RXD,$-2         ;wait for rising edge
@@ -54,7 +54,7 @@ AB_restore:
 
 ;take sample 2
 ;-------------
-        movwabs T1,13
+        movwabs T1,14
         setb    TR1
         jb      TF1,AB_restore  ;restart on timer overflow.
         jb      RXD,$-2         ;wait for falling edge
@@ -63,7 +63,7 @@ AB_restore:
 
 ;take sample 3
 ;-------------
-        movwabs T1,13
+        movwabs T1,14
         setb    TR1
         jb      TF1,AB_restore  ;restart on timer overflow.
         jnb     RXD,$-2         ;wait for rising edge
@@ -538,23 +538,6 @@ gd16_error:
 
 
 
-PutMessage:
-;==========================================================
-;print string from CRAM
-;==========================================================
-;INPUT:        DPTR   = string to print (CRAM)
-;----------------------------------------------------------
-        push    ACC
-pm_wchar:
-        clr     A
-        movc    A,@A+DPTR     ;get character
-        jz      pm_done
-        inc     DPTR
-        call    PutChar
-        sjmp    pm_wchar
-pm_done:
-        pop     ACC
-        ret
 
 
 PutString:

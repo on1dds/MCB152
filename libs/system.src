@@ -72,9 +72,9 @@ FlashLED:
         ret
 
 
-Hang:
+Hold:
 ;==========================================================
-;Routine to hang MCB152,only a hardreset will help!
+;Routine to hold MCB152,only a hardreset will help!
 ;==========================================================
         clr     A
         mov     IE,A

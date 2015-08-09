@@ -1,0 +1,91 @@
+    IFNDEF  GSCC_SRC
+GSCC_SRC     EQU TRUE
+;**
+;**     $Filename: gscc.src
+;**     $Release: 0
+;**     $Revision: 0
+;**     $Date: 27/03/2001
+;**     $Coding: Joachim Elen
+;**     
+;**
+;**     Template
+;**
+
+			CPU     8051
+
+			LISTING OFF
+			INCLUDE "as.inc"
+			INCLUDE "80c152.inc"
+			INCLUDE "hardware.inc"
+			INCLUDE "macros.inc"
+			LISTING ON
+
+
+
+			SEGMENT CODE
+
+
+
+;-------------------------------------------------------------------------
+            PROC    gscc_read
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;read databyte from gsc/rx queue
+;IN:    -
+;OUT:	ACC	=   framepointer
+;		C=0	=	success
+;		F0	=	frame-end indicator
+;		F1	=	frame-start indicator
+;-------------------------------------------------------------------------
+			clr		F1
+			jb		GSCC_ROPEN,checkpos
+
+;read new frame
+;--------------
+			call	gscb_read
+			jc		err
+			mov		GSCC_rframe,DPH
+			mov		GSCC_rpos+H,DPH
+			mov		GSCC_rpos+L,#0
+			mov		A,DPH
+			add		A,R0
+			mov		GSCC_rfend+H,A
+			mov		GSCC_rfend+L,R1
+			setb	GSCC_ROPEN
+			setb	F1
+			clr		C
+			ret
+
+;check read position
+;-------------------
+checkpos	mov		DPH,GSCC_rpos+H
+			mov		DPL,GSCC_rpos+L
+			mov		A,GSCC_rfend+L
+			cjne	A,DPL,getc
+			mov		A,GSCC_rfend+H
+			cjne	A,DPH,getc
+
+;close current frame
+;-------------------
+			clr		GSCC_ROPEN				;end of frame
+			mov		DPH,GSCC_rframe
+			call	mem_free
+			setb	F0
+			clr		C
+			ret
+
+;read char from frame
+;--------------------
+getc		movx	A,@DPTR
+			inc		DPTR
+			mov		GSCC_rpos+H,DPH
+			mov		GSCC_rpos+L,DPL
+			clr		F0
+			clr		C
+			ret
+
+err			setb	C
+			clr		F0
+			ret
+			ENDP
+
+    ENDIF

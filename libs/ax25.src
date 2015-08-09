@@ -226,8 +226,9 @@ C2A_initaddressfield:
         inc     DPTR
         djnz    R0,C2A_initaddressfield
 
-        clr     A                       ;zerofill SSID field
+        mov     A,#01100000b            ;zerofill SSID field (set reserved)
         movx    @DPTR,A
+        clr     A
 
         popw    AWR0
         popw    DP
@@ -324,7 +325,7 @@ C2A_convertssid:
 ;----------------------------------
         movwabs WR0,0
 
-C2A_cssid_nextcipher:
+C2A_cssid_nextdigit:
         inc     DPTR
         movx    A,@DPTR
 
@@ -339,9 +340,9 @@ C2A_cssid_number:
         clr     C
         subb    A,#'0'
 
-        call    AddDecCipher
+        call    AddDecDigit
         jc      C2A_err_ssidtoobig
-        jmp     C2A_cssid_nextcipher
+        jmp     C2A_cssid_nextdigit
 
 ;conversion error indicators
 ;---------------------------
@@ -501,9 +502,9 @@ R2A_storedigi:
 R2A_terminate:
         addwabs WR0,6
         mov     P2,WR0H
-        movx    A,@WR0L
+        movx    A,@R0
         setb    ACC.0
-        movx    @WR0L,A
+        movx    @R0,A
         jmp     R2A_done
 
 R2A_error:
@@ -621,7 +622,7 @@ GFP_seekpid:
         movx    A,@DPTR                 ;read control byte
         inc     R0
         inc     DPTR
-        cjne    A,#PID_ESCAPE,GFP_valid
+        cjne    A,#AX25_P_ESCAPE,GFP_valid
         sjmp    GFP_seekpid
 
 GFP_ftyperr:
@@ -651,7 +652,7 @@ GetFrameInfo:
         push    B
         call    GetFrameControl
         jc      GFI_error
-        anl     A,#NOT(FC_POLL)
+        anl     A,#~FC_POLL
         jmpftyp GFI_typok,GFI_ftyperr,GFI_uitest
 
 GFI_uitest:
@@ -666,7 +667,7 @@ GFI_typok:
 GFI_seekpid:
         movx    A,@DPTR                 ;read control byte
         inc     DPTR
-        cjne    A,#PID_ESCAPE,GFI_valid
+        cjne    A,#AX25_P_ESCAPE,GFI_valid
         sjmp    GFI_seekpid
 
 GFI_ftyperr:

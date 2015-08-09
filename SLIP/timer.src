@@ -1,0 +1,260 @@
+	IFNDEF	TIMER_SRC
+TIMER_SRC	EQU TRUE
+;**
+;**     $Filename: timer0.src
+;**     $Release: 1
+;**     $Revision: 0
+;**     $Date: 07/07/2001
+;**     $Coding: Joachim Elen
+;**     
+;**
+;**     TIMER 0 device driver
+;**
+;**		this reserves register bank 3.
+;**
+			CPU     8051
+
+			LISTING OFF
+			INCLUDE	"as.inc"			;extend	pseudo instructions
+			INCLUDE	"80c152.inc"		;assign	8052 register names
+			INCLUDE	"hardware.inc"		;assign	80152 specific names
+			INCLUDE	"ascii.inc"			;assign	ASCII character	names
+			INCLUDE	"macros.inc"		;macro definitions
+			INCLUDE	"malloc.src"
+			INCLUDE	"include\device.inc"	;device	specific definitions
+			LISTING ON
+
+
+T101			SFR		018h	;PRIACK		silencetime to enable priority frames
+T102			SFR		019h	;SLOTTIME	slottime timer
+T103			SFR		01Ah	;TXDELAY	transmitter startup timer
+T104			SFR		01Bh	;AXDELAY	repeater startup timer (additional TXD time)
+T105			SFR		01Ch	;AXSYNC		remote receiver sync timer (additional TXD time)
+T108			SFR		01Dh	;TXTAIL			
+
+			SEGMENT DATA
+T0_unit				db	?,?		;T0 interrupt tick
+T0_units_per_second	db	?,?
+T0_unitcount		db	?,?
+T0_seconds			db	?
+
+T100				db	?		;the time the remote repeater is supposed to be up after
+								;digipeating the last frame. (seconds)
+T106				db	?		;ten minute transmission limit
+T107				db	?		;anti hogging limit
+T10S				db	?
+
+T_hour				db	?
+T_min				db	?
+T_sec				db	?
+
+			SEGMENT BITDATA
+T100_EXPIRY			db	?
+T101_EXPIRY			db	?
+T102_EXPIRY			db	?
+T103_EXPIRY			db	?
+T104_EXPIRY			db	?
+T105_EXPIRY			db	?
+T106_EXPIRY			db	?
+T107_EXPIRY			db	?
+T108_EXPIRY			db	?
+SEC_EXPIRY			db	?
+
+			SEGMENT CODE
+
+;-------------------------------------------------------------------------
+			PROC	timer_start
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;init timer 0 and atart start timer interrupt
+;		ACC	counter boundary
+;-------------------------------------------------------------------------
+			mov		DPH,AT_data
+			mov		DPL,#AT_SBASE+40
+			movx	A,@DPTR
+			mov		T0_unit+L,A
+			inc		DPTR
+			movx	A,@DPTR
+			mov		T0_unit+H,A
+			inc		DPTR
+			movx	A,@DPTR
+			mov		T0_units_per_second+L,A
+			inc		DPTR
+			movx	A,@DPTR
+			mov		T0_units_per_second+H,A
+
+			mov		T0_unitcount+H,#0
+			mov		T0_unitcount+L,#0
+
+			anl		TCON,#11001100b			;stop timer 0
+			anl		TMOD,#11110000b			;set timer mode
+			orl		TMOD,#00000001b
+			mov		TH0,T0_unit+H
+			mov		TL0,T0_unit+L
+			setb	TR0
+			setb	ET0
+			setb	EA
+			ret
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	timer_stop
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;stop timer interrupt from running
+;-------------------------------------------------------------------------
+			clr		ET0
+			mov		P4 ,#0FFh
+			ret
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	timer_int
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;-------------------------------------------------------------------------
+			pushm	PSW,ACC
+			mov		PSW,#00011000b
+
+			clr		TR0
+			anl		TMOD,#11110000b
+			orl		TMOD,#00000001b
+			mov		TH0,T0_unit+H
+			mov		TL0,T0_unit+L
+			setb	TR0
+
+$$t101		mov		A,R0				;AXHANG (=TX-TAIL)
+			jz		$$t102
+			djnz	R0,$$t102
+			setb	T101_EXPIRY
+
+$$t102		mov		A,R1				;SLOTTIME
+			jz		$$t103
+			djnz	R1,$$t103
+			setb	T102_EXPIRY
+
+$$t103		mov		A,R2				;TXDELAY
+			jz		$$t104
+			djnz	R2,$$t104
+			setb	T103_EXPIRY
+
+$$t104		mov		A,R3				;AXDELAY - repeater startup
+			jz		$$t105
+			djnz	R3,$$t105
+			setb	T104_EXPIRY
+
+$$t105		mov		A,R4				;AXHANG (=TX-TAIL)
+			jz		$$t108
+			djnz	R4,$$t108
+			setb	T105_EXPIRY
+
+$$t108		mov		A,R5				;AXHANG (=TX-TAIL)
+			jz		$$tsec
+			djnz	R5,$$tsec
+			setb	T108_EXPIRY
+
+
+$$tsec		mov     A,T0_unitcount+H
+			cjne    A,T0_units_per_second+H,$+10
+			mov     A,T0_unitcount+L
+			cjne    A,T0_units_per_second+L,$+5
+			sjmp    $$tinc
+			jc      $$tinc
+
+$$restore	setb	SEC_EXPIRY
+			mov		T0_unitcount+H,#0
+			mov		T0_unitcount+L,#0
+			jmp		done
+
+$$tinc		mov		A,T0_unitcount+L
+			cjne	A,#0FFh,$$a
+			inc		T0_unitcount+H
+$$a			inc		T0_unitcount+L
+
+done		popm	ACC,PSW
+			reti
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	timer_process
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;-------------------------------------------------------------------------
+
+			jnb		SEC_EXPIRY,done
+			clr		SEC_EXPIRY
+
+			mov		DPH,AT_data					;copy time settings from S-register
+			mov		DPL,#AT_SBASE+40
+			movx	A,@DPTR
+			mov		T0_unit+L,A
+			inc		DPTR
+			movx	A,@DPTR
+			mov		T0_unit+H,A
+			inc		DPTR
+			movx	A,@DPTR
+			mov		T0_units_per_second+L,A
+			inc		DPTR
+			movx	A,@DPTR
+			mov		T0_units_per_second+H,A
+
+
+			mov		DPH,AT_data
+			mov		DPL,#AT_SBASE+44
+			movx	A,@DPTR
+			inc		A
+			movx	@DPTR,A
+			cjne	A,#60,$$a1a
+			jmp		$$a1b
+$$a1a		jc		$$t100
+$$a1b		clr		A
+			movx	@DPTR,A
+
+			inc		DPTR
+			movx	A,@DPTR
+			inc		A
+			movx	@DPTR,A
+			cjne	A,#60,$$a2a
+			jmp		$$a2b
+$$a2a		jc		$$t100
+$$a2b		clr		A
+			movx	@DPTR,A
+
+			inc		DPTR
+			movx	A,@DPTR
+			inc		A
+			movx	@DPTR,A
+			cjne	A,#24,$$a3a
+			jmp		$$a3b
+$$a3a		jc		$$t100
+$$a3b		clr		A
+			movx	@DPTR,A
+		
+
+$$t100		mov		A,T100
+			jz		$$t107
+			dec		A
+			mov		T100,A
+			jnz		$$t107
+			setb	T100_EXPIRY
+
+$$t107		mov		A,T107
+			jz		$$t10s
+			dec		A
+			mov		T107,A
+			jnz		$$t10s
+			setb	T107_EXPIRY
+
+$$t10s		inc		T10S
+			mov		A,T10S
+			cjne	A,#10,done
+			mov		T10S,#0
+
+$$t106		mov		A,T106
+			jz		$$t107
+			dec		A
+			mov		T106,A
+			jnz		$$t107
+			setb	T106_EXPIRY
+
+
+done		ret
+			ENDP
+
+	ENDIF

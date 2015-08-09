@@ -1,0 +1,183 @@
+	IFNDEF  ASCII_SRC
+ASCII_SRC	 EQU TRUE
+;**
+;**		$Filename: acii.src
+;**		$Release: 0
+;**		$Revision: 1
+;**		$Date: 24/02/2001
+;**		$Coding: Joachim Elen
+;**	 
+;**
+;**		ASCII connection device driver
+;**
+
+			CPU	 8051
+
+			LISTING OFF
+			INCLUDE "as.inc"
+			INCLUDE "hardware.inc"
+			INCLUDE "include\device.inc"
+			LISTING ON
+
+
+			SEGMENT	DATA
+
+ASCII_rbuf		db	?
+ASCII_rpos		db	?,?
+
+			SEGMENT BITDATA
+ASCII_OPEN		db  ?					;set if device is open
+ASCII_ROPEN		db	?				
+
+
+			SEGMENT CODE
+
+;-------------------------------------------------------------------------
+			PROC	ascii_open
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;open ASCII driver
+;-------------------------------------------------------------------------
+			jb		ASCII_OPEN,$$done
+			setb	ASCII_OPEN
+			clr		ASCII_ROPEN
+$$done		clr		C
+			ret
+
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	ascii_close
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;close ASCII driver
+;-------------------------------------------------------------------------
+			clr		ASCII_OPEN
+			jnb		ASCII_ROPEN,done
+			mov		DPH,ASCII_rbuf
+			call	mem_free
+
+done		clr		C
+			ret
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	ascii_read
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;read one byte from the LSC per ascii_read() call and add it to a
+;buffer. on a <CR> or <LF>, this buffer is written in a whole to the GSC
+;-------------------------------------------------------------------------
+			call	lsc_read
+			jc		$$x
+			mov		R7,A
+			call	lsc_write
+			
+$$a			cjne	A,#CAN,$$a1
+			jmp		$$y
+$$a1		cjne	A,#STX,$$a2
+			jmp		$$y
+$$a2		cjne	A,#ETX,$$b
+			jmp		$$y
+
+$$b			cjne	A,#LF,$$b01
+			jmp		$$b02
+$$b01		cjne	A,#CR,$$c
+$$b02		jnb		ASCII_ROPEN,$$x
+			clr		ASCII_ROPEN
+			mov		DPH,ASCII_rbuf
+			mov		R0,ASCII_rpos+H
+			mov		R1,ASCII_rpos+L
+			mov		A,R0
+			orl		A,R1
+			cjne	A,#0,$$z
+			call	mem_free
+			jmp		$$x
+
+$$c			jb		ASCII_ROPEN,$$c01
+			mov		A,#3
+			call	mem_alloc
+			jc		$$x
+			mov		ASCII_rbuf,DPH
+			mov		ASCII_rpos+H,#0
+			mov		ASCII_rpos+L,#0
+
+			setb	ASCII_ROPEN
+
+$$c01		mov		A,ASCII_rbuf
+			add		A,ASCII_rpos+H
+			mov		DPH,A
+			mov		DPL,ASCII_rpos+L
+			mov		A,R7
+			movx	@DPTR,A
+			inc		DPTR
+			mov		ASCII_rpos+L,DPL
+			mov		A,DPH
+			clr		C
+			subb	A,ASCII_rbuf
+			mov		ASCII_rpos+H,A
+
+$$x			clr		A
+$$y			setb	C
+			ret
+
+$$z			clr		C
+			ret
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	ascii_write
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;INPUT:		ACC		msg_type			message type
+;			DPH		*msg_ptr			message pointer
+;			R0/R1	msg_size			message size (in bytes) [H/L]
+;-------------------------------------------------------------------------
+			push	DPH
+$$a			cjne	A,#MSG_DATA_INDICATION,$$z
+
+			push	DPH
+			mov		DPTR,#txt_bold
+			call	printc
+			pop		DPH
+
+			mov		DPL,#0
+
+$$a01		mov		A,R0
+			orl		A,R1
+			jz		$$a03
+
+			movx	A,@DPTR
+			inc		DPTR
+			call	lsc_write
+
+			mov     A,R1
+			jnz     $$a02
+			dec     R0
+$$a02		dec     R1
+			jmp		$$a01
+
+$$a03		mov		DPTR,#txt_normal
+			call	printc
+			call	at_write_crlf
+
+$$z			pop		DPH
+			call	mem_free
+			clr		C
+			ret
+
+txt_bold	db		1Bh,5Bh,"32m",0
+txt_normal	db		1Bh,5Bh,"30m",0
+
+;31	= letter rood
+;32 = letter groen
+;33 = letter olijfgroen
+;34 = letter blauw
+;35 = letter paars
+;36 = letter zeegroen
+;37 = letter grijs
+;38 = letter wit
+
+			ENDP
+
+
+	ENDIF

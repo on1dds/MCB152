@@ -1,6 +1,6 @@
-        IF (ASCII_INC)
-        ELSE
-ASCII_INC       SET     1
+        IFNDEF  ASCII_INC
+ASCII_INC       EQU     1
+
 ;**
 ;**     $Filename: ascii.inc
 ;**     $Release: 1
@@ -15,6 +15,7 @@ ASCII_INC       SET     1
 ;------ ASCII-name definition
 
 NUL       EQU 00h ;null
+NULL      EQU 00h ;null
 SOH       EQU 01h ;start of heading
 STX       EQU 02h ;start of text
 ETX       EQU 03h ;end of text
@@ -48,4 +49,6 @@ RS        EQU 1Eh ;record separator
 US        EQU 1Fh ;unit separator
 SPACE     EQU ' ' ;space
 SEMICOLON EQU 3Bh ;semicolon
+COMMA     EQU 2Ch ;comma
+CEDILLA   EQU 2Ch ;comma
         ENDIF     ; ASCII_INC

@@ -1,0 +1,1496 @@
+	IFNDEF  GSC_SRC
+GSC_SRC     EQU TRUE
+;**
+;**     $Filename: gsc.src
+;**     $Release: 0
+;**     $Revision: 1
+;**     $Date: 12/11/2000
+;**     $Coding: Joachim Elen
+;**     
+;**
+;**     Global Serial Channel Device driver
+;**
+
+            CPU     8051
+
+			LISTING	OFF
+			INCLUDE	"as.inc"			;extend	pseudo instructions
+			INCLUDE	"80c152.inc"		;assign	8052 register names
+			INCLUDE	"hardware.inc"		;assign	80152 specific names
+			INCLUDE	"ascii.inc"			;assign	ASCII character	names
+			INCLUDE	"macros.inc"		;macro definitions
+			INCLUDE	"malloc.src"
+			INCLUDE	"ipc.src"
+			INCLUDE "timer.src"
+			INCLUDE	"include\device.inc"	;device	specific definitions
+			INCLUDE	"include\message.inc"
+			LISTING	ON
+
+GSC_SPEED       EQU GSC_XCLK            ;clocking speed
+
+
+DCD				EQU		P4.6
+PTT				EQU		P4.7
+
+tistart		MACRO	tmr
+			mov		DPH,AT_data							;start T100
+			mov		DPL,#AT_SBASE+tmr
+			movx	A,@DPTR
+			jnz		$$tsb
+$$tsa		mov		T{"tmr"},#0
+			setb	T{"tmr"}_EXPIRY
+			jmp		$$tsz
+$$tsb		mov		T{"tmr"},#0
+			clr		T{"tmr"}_EXPIRY
+			mov		T{"tmr"},A
+$$tsz
+			ENDM
+
+
+;States
+PH_RECEIVER_READY			EQU		0
+PH_TRANSMITTER_READY		EQU		0
+
+PH_READY					EQU		0
+PH_RECEIVING				EQU		1
+PH_TRANSMITTER_SUPPRESSION	EQU		2
+PH_TRANSMITTER_START		EQU		3
+PH_TRANSMITTING				EQU		4
+PH_DIGIPEATING				EQU		5
+PH_RECEIVER_START			EQU		6
+
+
+            SEGMENT DATA
+GSC_status			db	?		;status of GSC state machine
+GSC_status2			db	?
+
+GSC_rbuf			db  ?       ;pointer to pre-allocated memory
+GSC_tframe			db	?		;pointer to pre-allocated memory
+GSC_tframe_size		db	?,?		;size of outgoing frame
+
+GSCC_wframe			db	?
+GSCC_wpos			db	?,?
+
+GSC_randomize		db	?
+
+GSC_rcount			db	?
+GSC_tcount			db	?
+
+
+            SEGMENT BITDATA
+GSC_OPEN			db  ?       ;set if device is open
+GSC_RBUF			db  ?       ;set when GSC_rbuf is used
+
+GSC_TFRAME			db	?		;set when GSC_tframe is used
+GSC_TEN				db	?		;transmitter is enabled (PTT pressed)
+GSC_TXBUSY			db	?		;transmitting data
+GSC_RXBUSY			db	?		;set when actually receiving something
+
+GSCC_WOPEN			db	?
+GSC_DUPLEX			db	?		;set when full duplex mode is enabled
+GSC_FORCEPTT		db	?
+
+
+;state machine flags
+;-------------------
+GSC_DIGIPEATING				db	?		;set when this transmission is for digipeating frames
+										;cleared when this transmission is for normal frames
+GSC_REPEATER_UP				db	?		;set when repeater is still expected to be still transmitting
+										;cleared when repeater carrier is expected to have dropped
+GSC_INTERRUPTED				db	?		;set when anti-hogging or 10 minute transmitter limits have
+										;interrupted the transmission of normal frames
+GSC_LOSS_OF_SIGNAL			db	?		;acquisition and loss of signal do NOT refer to FM carrier
+GSC_ACQUISITION_OF_SIGNAL	db	?		;detect, but rather to modem syncronization, HDLC flags,
+										;and HDLC framing
+GSC_DCD_ACTIVE				db	?		;holds the DCD status of the last DCD check
+
+
+
+
+
+            SEGMENT CODE
+;-------------------------------------------------------------------------
+            PROC    gsc_open
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;open the GSC device in SIMPLEX mode and enter receive mode
+;-------------------------------------------------------------------------
+;IN:
+;		-
+;RETURNED:
+;	PSW.C	=		SET on error
+;-------------------------------------------------------------------------
+			jb      GSC_OPEN,$$done			;exit if already open.
+            setb    GSC_OPEN				;set device open indicator
+
+;initialize GSC status machine
+;-----------------------------
+			mov		GSC_status,#PH_READY
+			mov		GSC_status2,#PH_READY
+			clr		GSC_TXBUSY
+			clr		T100_EXPIRY
+			clr		T101_EXPIRY
+			clr		T102_EXPIRY
+			clr		T103_EXPIRY
+			clr		T104_EXPIRY
+			clr		T105_EXPIRY
+
+;startup hardware
+;----------------
+			clr     GSC_RBUF						;initialise hardware
+			call	gsc_reset
+
+			mov		GSC_rcount,#23
+			mov		GSC_tcount,#23
+
+			setb	EGSRV							;enable interrupts
+			setb	EGSRE
+$$done		clr		C
+            ret
+
+			ENDP
+
+;-------------------------------------------------------------------------
+            PROC    gsc_close
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;close the gsc device, removes queues and free internal memory
+;-------------------------------------------------------------------------
+;IN:
+;		-
+;RETURNED:
+;	PSW.C	=		SET on error
+;-------------------------------------------------------------------------
+            jnb     GSC_OPEN,$$err
+            clr		GSC_OPEN
+
+			anl     IEN1,#~(00111011b)  ;disable GSCRx,GSCTx & DMA1 int
+			clr		EGSRV
+			clr		EGSRE
+			clr		EGSTV
+			clr		EGSTE
+            clr     C
+            ret
+
+$$err:      setb    C
+            ret
+            ENDP
+
+;-------------------------------------------------------------------------
+            PROC    gsc_read
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;read block/frame from gsc receive queue
+;-------------------------------------------------------------------------
+;IN:
+;		-
+;RETURNED:
+;-------------------------------------------------------------------------
+			mov		A,#MQ_GSC_READ
+			call	msgrcv
+			mov		A,B
+			ret
+			ENDP
+
+
+;-------------------------------------------------------------------------
+            PROC    gsc_write
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;write block/frame to gsc transmit queue
+;-------------------------------------------------------------------------
+;IN:
+;	DPH		=		framepointer high
+;	R0/R1	=		framesize
+
+;RETURNED:
+;	PSW.C	=		SET on error
+;-------------------------------------------------------------------------
+			mov		B,A
+			mov		A,#MQ_GSC_WRITE
+			call	msgsnd
+			setb	C
+			ret
+			ENDP
+
+;-------------------------------------------------------------------------
+            PROC    gsc_flush
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;write block/frame to gsc transmit queue
+;-------------------------------------------------------------------------
+$$a04		mov		A,#MQ_GSC_WRITE
+			call	msgrcv
+			jc		$$a05
+			call	mem_free
+			jmp		$$a04
+$$a05		mov		A,#MQ_GSC_READ
+			call	msgrcv
+			jc		$$a06
+			call	mem_free
+			jmp		$$a05
+$$a06		mov		A,#MQ_GSC_NORMAL
+			call	msgrcv
+			jc		$$a07
+			call	mem_free
+			jmp		$$a06
+$$a07		mov		A,#MQ_GSC_PRIORITY
+			call	msgrcv
+			jc		$$a08
+			call	mem_free
+			jmp		$$a07
+$$a08		mov		A,#MQ_GSC_RECEIVE
+			call	msgrcv
+			jc		$$a09
+			call	mem_free
+			jmp		$$a08
+$$a09		jnb		GSC_RBUF,$$a10
+			mov		DPH,GSC_rbuf
+			call	mem_free
+$$a10		jnb		GSC_TFRAME,$$a11
+			mov		DPH,GSC_tframe
+			call	mem_free
+			clr		GSC_TFRAME
+$$a11		mov		T100,#0
+			clr		T100_EXPIRY
+			mov		T101,#0
+			clr		T101_EXPIRY
+			mov		T102,#0
+			clr		T102_EXPIRY
+			mov		T103,#0
+			clr		T103_EXPIRY
+			mov		T104,#0
+			clr		T104_EXPIRY
+			mov		T105,#0
+			clr		T105_EXPIRY
+			mov		T106,#0
+			clr		T106_EXPIRY
+			mov		T107,#0
+			clr		T107_EXPIRY
+			mov		T108,#0
+			clr		T108_EXPIRY
+			mov		GSC_status,#0
+			mov		GSC_status2,#0
+			clr		GSC_TXBUSY
+			clr		GSC_RXBUSY
+			clr		GSC_DCD_ACTIVE
+			clr		C
+			ret
+
+			ENDP
+
+
+
+
+;-------------------------------------------------------------------------
+            PROC    gsc_status
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;write block/frame to gsc transmit queue
+;-------------------------------------------------------------------------
+			clr		A
+			mov		C,P4.6
+			cpl		C
+			mov		ACC.0,C				;bit 0 = carrier detect
+			mov		C,TEN
+			mov		ACC.1,C				;bit 1 = transmit status
+$$b			mov		A,B
+			clr		C
+			ret
+
+			ENDP
+
+;-------------------------------------------------------------------------
+            PROC    gsc_reset
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;setup GSC hardware
+;-------------------------------------------------------------------------
+			mov		BAUD,#GSC_SPEED
+
+			IF	GSC_SPEED =	0			;external clocking
+				mov		GMOD,#PR_SDLC+PL_32+CT_16+AL_8+M_NORMAL+XTCLK
+				anl		PCON,#10011111b
+				orl		PCON,#00011100b
+				setb	RXC
+				setb	TXC
+			ELSE						;internal clocking
+				mov		GMOD,#PR_SDLC+PL_32+CT_16+AL_8+M_NORMAL
+				anl		PCON,#10011111b
+				orl		PCON,#00000100b
+				clr		RXC
+				clr		TXC
+
+			ENDIF
+
+			mov		IFS,#8				;8 bittimes	between	frames
+			clr		HBAEN				;disable hardware based	ack.
+			mov		AMSK0,#0FFh			;unmask	all	frames
+			mov		AMSK1,#0FFh
+			setb	DMA
+			setb	DCD
+
+			clr		GSC_TFRAME
+			clr		GSC_RBUF
+			clr		GSC_TEN
+			clr		GSC_TXBUSY
+			clr		GSC_RXBUSY
+
+			mov		GSC_status,PH_READY
+			mov		GSC_status2,PH_READY
+			call	gsc_receive_on
+            jc      reset_error
+			clr		C
+reset_error	ret
+			ENDP
+
+;-------------------------------------------------------------------------
+            PROC    gsc_receive_off
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;enable GSC receiver
+;-------------------------------------------------------------------------
+			clr		GREN
+			clr		EGSRV							;enable receive interrupts
+			clr		EGSRE
+			clr		C
+            ret
+			ENDP
+
+
+;-------------------------------------------------------------------------
+            PROC    gsc_receive_on
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;enable GSC receiver
+;-------------------------------------------------------------------------
+			pushm   DPH,DPL,ACC
+
+;allocate frame buffer
+;---------------------
+			jb      GSC_RBUF,set_rx
+            call    mem_qalloc
+            jc      rx_error
+            mov     GSC_rbuf,DPH
+            setb    GSC_RBUF
+
+;enable receiver
+;---------------
+set_rx
+
+$$loop:		mov		A,RFIFO							;clear receive fifo
+			jb		RFNE,$$loop
+			setb	GREN							;enable reception
+			clr		GSC_RXBUSY
+
+;setup DMA
+;---------
+			clr     A
+			mov		DAR1H,GSC_rbuf					;destination = allocated frame buffer
+			mov		DAR1L,A
+			mov		SAR1H,A							;src = serial port
+			mov		SAR1L,#RFIFO
+			mov		BCR1L,A							;byte count = size of allocated frame buffer
+			mov		DPL,GSC_rbuf
+			mov		DPH,#MEM_blocks
+			movx	A,@DPTR
+			mov		BCR1H,A
+			mov		DCON1,#001101000b				;src = rfifo, dst =	xram, GO
+			orl		DCON1,#1b
+
+;setup interrupts
+;----------------
+			setb	EA
+			setb	EGSRV							;enable receive interrupts
+			setb	EGSRE
+
+			clr		C
+rx_error	popm    ACC,DPL,DPH
+            ret
+			ENDP
+
+;-------------------------------------------------------------------------
+            PROC    gsc_transmit_on
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;enable GSC receiver
+;-------------------------------------------------------------------------
+			clr		P4.0					;set TX indicator
+			clr		PTT						;push to talk
+			setb	GSC_TEN					;flag transmitter enabled
+			clr		C
+			ret
+			ENDP
+
+;-------------------------------------------------------------------------
+            PROC    gsc_transmit_off
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;enable GSC receiver
+;-------------------------------------------------------------------------
+			setb	P4.0					;set TX indicator
+			setb	PTT						;push to talk
+			clr		GSC_TEN					;flag transmitter enabled
+			clr		C
+			ret
+			ENDP
+
+;-------------------------------------------------------------------------
+            PROC    gsc_rawwrite
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;hardforce frame transmission
+;-------------------------------------------------------------------------
+			jnb		GSC_TEN,write_error
+			jb		GSC_TFRAME,write_error
+
+;save frame
+;----------
+			mov		GSC_tframe,DPH
+			mov		GSC_tframe_size+H,R0
+			mov		GSC_tframe_size+L,R1
+			setb	GSC_TFRAME
+
+;setup transmitter
+;-----------------
+			setb	TEN
+
+;setup DMA
+;---------
+			anl		DCON0,#11111110b				;disable DMA
+			mov		DARH0,#0						;destination of data is TFIFO
+			mov		DARL0,#TFIFO
+			mov		SARH0,DPH						;init source adres
+			mov		SARL0,#0
+			mov		BCRH0,R0						;init byte counter
+			mov		BCRL0,R1
+			mov		DCON0,#010011001b				;init DMA for DST=sfr, SRC=xdata RAM
+
+;start interrupts
+;----------------
+			setb	EA
+			setb	EGSTE
+			setb	EGSTV
+
+			clr		C
+			ret
+
+write_error	setb	C
+			ret
+			ENDP
+
+
+
+
+
+
+;-------------------------------------------------------------------------
+            PROC    gsc_putc
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;read databyte from gsc/rx queue
+;IN:    -
+;OUT:	ACC	=   framepointer
+;		C=0	=	success
+;-------------------------------------------------------------------------
+			jb		F1,newframe
+			jb		F0,closeframe
+			jnb		GSCC_WOPEN,$$error
+
+;check for framesize overflow
+;----------------------------
+			mov		B,A
+			
+			mov		DPH,GSCC_wframe				;get allocsize wframe
+			call	mem_getsize
+			add		A,GSCC_wframe				;add memory offset to this size
+			mov		R0,GSCC_wpos+H				;if the char write position is not yet there ...
+			cjne	A,AR0,writechar				;there's no overflow ... writechar allowed.
+
+$$error		setb	C
+			ret
+
+writechar
+;-------------------
+;write char to frame
+;-------------------
+			mov		DPH,GSCC_wpos+H				;get writeposition
+			mov		DPL,GSCC_wpos+L
+			mov		A,B
+			movx	@DPTR,A						;write the char
+			inc		DPTR						;increase writeposition
+			mov		GSCC_wpos+H,DPH				;and save.
+			mov		GSCC_wpos+L,DPL
+
+$$done		clr		C
+			ret
+
+newframe
+;----------------
+;open a new frame
+;----------------
+			call	closeframe					;close previous frame
+			jc		$$error
+
+			call	mem_qalloc					;allocate new frame
+			jc		$$error
+			mov		GSCC_wframe,DPH				;save framepointer
+			mov		GSCC_wpos+H,DPH				;save initial write position
+			mov		GSCC_wpos+L,#0
+
+			setb	GSCC_WOPEN					;mark frame as open
+			clr		C
+			ret
+
+$$error		setb	C
+			ret
+
+closeframe
+;-----------------------
+;close the current frame
+;-----------------------
+			jnb		GSCC_WOPEN,$$done
+
+			clr		C							;calculate framesize
+			mov		A,GSCC_wpos+H
+			subb	A,GSCC_wframe
+			mov		R0,A
+			mov		R1,GSCC_wpos+L
+
+			pushm	DPH,AR0,AR1
+			mov		A,#1								;< PH-QUIET indication
+			call	mem_alloc
+			mov		A,#MSG_SEIZE_REQUEST
+			mov		R0,#0
+			mov		R1,#0
+			call	gsc_write
+			popm	AR1,AR0,DPH
+
+$$resize	mov		DPH,GSCC_wframe				;get framepointer
+			call    mem_resize
+			mov		A,#MSG_DATA_REQUEST
+			call	gsc_write					;write to gsc queue
+
+			mov		A,#1								;< PH-QUIET indication
+			call	mem_alloc
+			mov		A,#MSG_RELEASE_REQUEST
+			mov		R0,#0
+			mov		R1,#0
+			call	gsc_write
+
+$$done		clr		C
+			ret
+			ENDP
+
+
+
+
+
+
+;=========================================================================
+;=========================================================================
+;========                                        =========================
+;========  I N T E R R U P T   R O U T I N E S   =========================
+;========                                        =========================
+;=========================================================================
+;=========================================================================
+
+;-------------------------------------------------------------------------
+            PROC    gsc_rx_valid
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;register received frame
+;-------------------------------------------------------------------------
+            pushm   PSW,ACC,AR0,AR1,DPH,DPL
+
+;register the received frame
+            negw    BCR1
+			mov		DPH,GSC_rbuf
+			call	mem_getsize
+			add		A,BCRH1
+			mov		R0,A
+			mov		R1,BCRL1
+
+			mov		A,#MQ_GSC_RECEIVE
+			mov		B,#MSG_DATA_INDICATION
+			mov		DPH,GSC_rbuf
+			call	msgsnd
+			inc		GSC_rcount
+
+			clr     GSC_RBUF
+
+;setup for reception of new frame
+			clr		GSC_RXBUSY
+			call	gsc_receive_on
+
+            popm    DPL,DPH,AR1,AR0,ACC,PSW
+            reti
+            ENDP
+
+;-------------------------------------------------------------------------
+            PROC    gsc_rx_error
+;-------------------------------------------------------------------------
+			pushm	PSW
+
+;log type of error
+            ;??? (not yet implemented)
+
+;setup for reception of new frame
+			clr		GSC_RXBUSY
+			call	gsc_receive_on
+
+			popm	PSW
+            reti
+            ENDP
+
+
+;-------------------------------------------------------------------------
+            PROC    gsc_tx_error
+;-------------------------------------------------------------------------
+;the transmission of the frame failed.
+;the frame is not removed from the queue,
+;-------------------------------------------------------------------------
+			push	PSW
+
+			clr		GSC_TFRAME
+			mov		R0,GSC_tframe_size+H
+			mov		R1,GSC_tframe_size+L
+			mov		DPH,GSC_tframe
+			call	gsc_rawwrite
+
+			pop		PSW
+$$a			reti
+			ENDP
+
+;-------------------------------------------------------------------------
+            PROC    gsc_tx_valid
+;-------------------------------------------------------------------------
+;the transmission of the frame was successful
+;the fame is deallocated
+;-------------------------------------------------------------------------
+			pushm	PSW,DPH,DPL
+
+			clr		EGSTV				;disable transmit valid interrupt
+			clr		EGSTE				;disable transmit error interrupt
+
+;free frame from memory
+;----------------------
+			mov		DPH,GSC_tframe
+			call	mem_free
+			clr		GSC_TFRAME
+			inc		GSC_tcount
+
+			popm	DPL,DPH,PSW
+			reti
+			ENDP
+
+
+;-------------------------------------------------------------------------
+            PROC    gsc_process
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;simplex physical layer state machine handler
+;implemented as prescribed by
+;AX.25 Link Access Protocol for Amateur Packet Radio
+;version 2.2, revision: 11 november 1997
+;-------------------------------------------------------------------------
+			inc		GSC_randomize
+			
+;update acquisition and loss of signal flags
+;-------------------------------------------
+$$a			;void
+
+
+$$b			setb	DCD
+			jnb		DCD,$$b02
+
+$$b01		jnb		GSC_DCD_ACTIVE,$$c
+			setb	GSC_LOSS_OF_SIGNAL
+			clr		GSC_ACQUISITION_OF_SIGNAL
+			clr		GSC_DCD_ACTIVE
+			jmp		$$c
+
+$$b02		jb		GSC_DCD_ACTIVE,$$c
+			setb	GSC_ACQUISITION_OF_SIGNAL
+			clr		GSC_LOSS_OF_SIGNAL
+			setb	GSC_DCD_ACTIVE
+			jmp		$$c
+
+$$c			jb		GSC_DUPLEX,duplex
+
+
+simplex		jb		GSC_TFRAME,$$z
+			mov		A,GSC_status
+			cje		A,#PH_READY,hd_ready
+			cje		A,#PH_RECEIVING,hd_receiving
+			cje		A,#PH_TRANSMITTER_SUPPRESSION,hd_transmitter_suppression
+			cje		A,#PH_TRANSMITTER_START,hd_transmitter_start
+			cje		A,#PH_TRANSMITTING,hd_transmitting
+			cje		A,#PH_DIGIPEATING,hd_digipeating
+			cje		A,#PH_RECEIVER_START,hd_receiver_start
+$$z			ret
+
+duplex		call	$$rx
+			jb		GSC_FORCEPTT,$$txptt
+			jmp		$$tx
+
+;full duplex receive
+$$rx		mov		A,GSC_status
+			cje		A,#PH_READY,fd_receiver_ready
+			cje		A,#PH_RECEIVING,fd_receiving
+			ret
+
+;full duplex transmit
+$$tx		jb		GSC_TFRAME,$$z
+			mov		A,GSC_status2
+			cje		A,#PH_TRANSMITTER_READY,fd_transmitter_ready
+			cje		A,#PH_TRANSMITTER_START,fd_transmitter_start
+			cje		A,#PH_TRANSMITTING,fd_transmitting
+$$z			ret
+
+;full duplex transmit with forced PTT
+$$txptt		jb		GSC_TFRAME,$$z
+			jmp		fd_transmitting_ptt
+
+
+;***************************************************************************
+;***************************************************************************
+;****                                                                   ****
+;****  F U L L - D U P L E X - M O D E                                  ****
+;****                                                                   ****
+;***************************************************************************
+;***************************************************************************
+
+;----------------------------------------------------------
+;R E C E I V E R   R E A D Y
+;----------------------------------------------------------
+fd_receiver_ready:
+			mov		GSC_status,#PH_RECEIVER_READY
+
+$$a			jnb		GSC_ACQUISITION_OF_SIGNAL,$$b
+			clr		GSC_ACQUISITION_OF_SIGNAL
+
+			;mov		T100,#0								;stop all timers
+			;clr		T100_EXPIRY
+			;mov		T101,#0
+			;clr		T101_EXPIRY
+			;mov		T102,#0
+			;clr		T102_EXPIRY
+			;mov		T103,#0
+			;clr		T103_EXPIRY
+			;mov		T104,#0
+			;clr		T104_EXPIRY
+			;mov		T105,#0
+			;clr		T105_EXPIRY
+			;mov		T106,#0
+			;clr		T106_EXPIRY
+			;mov		T107,#0
+			;clr		T107_EXPIRY
+			;mov		T108,#0
+			;clr		T108_EXPIRY
+
+			mov		A,#1								;< PH-QUIET indication
+			call	mem_alloc
+			jc		$$b
+			mov		A,#MQ_GSC_READ
+			mov		B,#MSG_BUSY_INDICATION
+			mov		R0,#0
+			mov		R1,#0
+			call	msgsnd
+			jmp		fd_receiving
+
+$$b			;no other primitives to be detected
+			ret
+
+;----------------------------------------------------------
+;R E C E I V I N G
+;----------------------------------------------------------
+fd_receiving:
+			mov		GSC_status,#PH_RECEIVING
+
+$$a			mov		A,#MQ_GSC_RECEIVE
+			call	msgchk
+			jc		$$b
+			mov		A,#MQ_GSC_RECEIVE
+			push	IEN1
+			clr		EGSRV
+			call	msgrcv
+			pop		IEN1
+			jc		$$b
+			mov		A,#MQ_GSC_READ						;frame to gsc_read queue
+			mov		B,#MSG_DATA_INDICATION
+			call	msgsnd
+			jmp		$$z
+
+$$b			jnb		GSC_LOSS_OF_SIGNAL,$$z
+			mov		A,#1								;< PH-QUIET indication
+			call	mem_alloc
+			jc		$$z
+			clr		GSC_LOSS_OF_SIGNAL
+			mov		A,#MQ_GSC_READ
+			mov		B,#MSG_QUIET_INDICATION
+			mov		R0,#0
+			mov		R1,#0
+			call	msgsnd
+			jmp		fd_receiver_ready
+
+$$z			ret
+
+;----------------------------------------------------------
+;T R A N S M I T T E R   R E A D Y
+;----------------------------------------------------------
+fd_transmitter_ready:
+			mov		GSC_status2,#PH_TRANSMITTER_READY
+
+$$a			mov		A,#MQ_GSC_NORMAL
+			call	msgrcv
+			jc		$$c
+			mov		A,B
+
+			cjne	A,#MSG_SEIZE_REQUEST,$$b
+			call	mem_free
+
+			tistart	103
+			call	gsc_transmit_on
+			jmp		fd_transmitter_start
+
+$$b			;cjne	A,#MSG_RELEASE_REQUEST,$$c
+			call	mem_free
+			;jmp		$$c
+
+$$c			mov		A,#MQ_GSC_WRITE
+			call	msgrcv
+			jc		$$z
+			mov		A,B
+			mov		A,#MQ_GSC_NORMAL					;add to normal queue
+			call	msgsnd
+
+$$z			ret
+
+
+
+;----------------------------------------------------------
+;T R A N S I M T T E R   S T A R T
+;----------------------------------------------------------
+fd_transmitter_start:
+			mov		GSC_status2,#PH_TRANSMITTER_START
+
+$$a			jnb		T103_EXPIRY,$$b
+			clr		T103_EXPIRY
+
+			mov		A,#1								;< PH-QUIET indication
+			call	mem_alloc
+			jc		$$z
+			mov		A,#MQ_GSC_READ
+			mov		B,#MSG_SEIZE_CONFIRM
+			mov		R0,#0
+			mov		R1,#0
+			call	msgsnd
+			jmp		fd_transmitting
+
+$$b			mov		A,#MQ_GSC_WRITE
+			call	msgrcv
+			jc		$$z
+			mov		A,B
+			mov		A,#MQ_GSC_NORMAL					;add frame to normal queue
+			call	msgsnd
+
+$$z			ret
+
+
+
+;----------------------------------------------------------
+;T R A N S M I T T I N G 
+;----------------------------------------------------------
+fd_transmitting:
+			mov		GSC_status2,#PH_TRANSMITTING
+
+			mov		A,#MQ_GSC_WRITE
+			call	msgrcv
+			jc		$$z
+			mov		A,B
+
+$$a			cjne	A,#MSG_SEIZE_REQUEST,$$b
+			mov		A,#MQ_GSC_READ
+			mov		B,#MSG_SEIZE_CONFIRM
+			mov		R0,#0
+			mov		R1,#0
+			call	msgsnd
+			jmp		$$c
+
+$$b			;all other primitives
+			mov		A,#MQ_GSC_NORMAL					;add to normal queue
+			call	msgsnd
+
+$$c			mov		A,#MQ_GSC_NORMAL
+			call	msgrcv
+			jc		$$z
+			mov		A,B
+
+			cjne	A,#MSG_RELEASE_REQUEST,$$d
+			call	mem_free
+			call	gsc_transmit_off
+			jmp		fd_transmitter_ready
+
+$$d			cjne	A,#MSG_DATA_REQUEST,$$e
+$$d01		call	gsc_rawwrite
+			jmp		$$z
+
+$$e			cjne	A,#MSG_EXPEDITED_DATA_REQUEST,$$f
+			jmp		$$d01
+
+$$f			call	mem_free
+$$z			ret
+
+;----------------------------------------------------------
+;T R A N S M I T T I N G - W I T H   F O R C E D   P T T
+;----------------------------------------------------------
+fd_transmitting_ptt:
+			jb		GSC_TEN,$$a
+			call	gsc_transmit_on
+
+$$a			mov		A,#MQ_GSC_WRITE
+			call	msgrcv
+			jc		$$z
+			mov		A,B
+
+			cjne	A,#MSG_SEIZE_REQUEST,$$b
+			mov		A,#MQ_GSC_READ
+			mov		B,#MSG_SEIZE_CONFIRM
+			mov		R0,#0
+			mov		R1,#0
+			call	msgsnd
+			jmp		$$c
+
+$$b			;all other primitives
+			mov		A,#MQ_GSC_NORMAL					;add to normal queue
+			call	msgsnd
+
+$$c			mov		A,#MQ_GSC_NORMAL
+			call	msgrcv
+			jc		$$z
+			mov		A,B
+
+			cjne	A,#MSG_RELEASE_REQUEST,$$d
+			call	mem_free
+			jmp		$$z
+
+$$d			cjne	A,#MSG_DATA_REQUEST,$$e
+$$d01		call	gsc_rawwrite
+			jmp		$$z
+
+$$e			cjne	A,#MSG_EXPEDITED_DATA_REQUEST,$$f
+			jmp		$$d01
+
+$$f			call	mem_free
+$$z			ret
+
+
+
+;***************************************************************************
+;***************************************************************************
+;****                                                                   ****
+;****  H A L F - D U P L E X - M O D E                                  ****
+;****                                                                   ****
+;***************************************************************************
+;***************************************************************************
+;----------------------------------------------------------
+;R E A D Y
+;----------------------------------------------------------
+hd_ready:		mov		GSC_status,#PH_READY
+
+$$check_gsc_write_queue
+;----------------------
+			mov		A,#MQ_GSC_WRITE
+			call	msgrcv
+			jc		$$check_normal_queue
+			mov		A,B
+
+$$a			cjne	A,#MSG_EXPEDITED_DATA_REQUEST,$$b
+			mov		A,#MQ_GSC_PRIORITY					;add frame to priority queue
+			call	msgsnd
+			setb	GSC_DIGIPEATING						;set digipeating
+			call	start_transmitter					;start transmitter
+			jmp		hd_transmitter_start					;go transmitter start state
+
+$$b			;all other primitives
+			mov		A,#MQ_GSC_NORMAL					;add to normal queue
+			call	msgsnd
+
+$$check_normal_queue
+;-------------------
+			mov		A,#MQ_GSC_NORMAL
+			call	msgrcv
+			jc		$$check_timers
+			mov		A,B
+			
+$$c			cjne	A,#MSG_SEIZE_REQUEST,$$de
+			call	mem_free
+			clr		GSC_DIGIPEATING						;clear digipeating
+			call	start_transmitter					;start transmitter
+			jmp		hd_transmitter_start
+
+$$de		call	mem_free							;discard erroneous primitive
+
+$$check_timers
+;-------------
+$$f			jnb		T102_EXPIRY,$$check_hardware
+			clr		GSC_REPEATER_UP						;clear repeater up
+
+$$check_hardware
+;--------------
+$$g			jnb		GSC_ACQUISITION_OF_SIGNAL,$$h
+			clr		GSC_ACQUISITION_OF_SIGNAL
+			call	acquisition
+			jmp		hd_receiving
+
+$$h			;clr		GSC_LOSS_OF_SIGNAL					;discard all other primitives
+
+$$z			ret
+
+;----------------------------------------------------------
+;R E C E I V I N G
+;----------------------------------------------------------
+hd_receiving:	mov		GSC_status,#PH_RECEIVING
+
+$$check_gsc_write_queue
+;----------------------
+			mov		A,#MQ_GSC_WRITE
+			call	msgrcv
+			jc		$$check_normal_queue
+			mov		A,B
+
+$$a			cjne	A,#MSG_EXPEDITED_DATA_REQUEST,$$b
+			mov		A,#MQ_GSC_PRIORITY					;add frame to priority queue
+			call	msgsnd
+			jmp		$$check_normal_queue
+
+$$b			;all other primitives
+			mov		A,#MQ_GSC_NORMAL					;add to normal queue
+			call	msgsnd
+
+$$check_normal_queue
+;-------------------
+			;normal queue and digipeat queue processing is suspended
+
+$$check_timers
+;-------------
+			;not checked
+
+$$check_hardware
+;---------------
+$$c			mov		A,#MQ_GSC_RECEIVE
+			call	msgchk
+			jc		$$d
+			mov		A,#MQ_GSC_RECEIVE
+			push	IEN1
+			clr		EGSRV
+			call	msgrcv
+			pop		IEN1
+			jc		$$d
+			mov		A,#MQ_GSC_READ						;frame to gsc_read queue
+			mov		B,#MSG_DATA_INDICATION
+			call	msgsnd
+			jmp		$$z
+
+
+$$d			jnb		GSC_LOSS_OF_SIGNAL,$$z
+			clr		GSC_LOSS_OF_SIGNAL
+			;clr		GSC_ACQUISITION_OF_SIGNAL
+			mov		A,#1								;< PH-QUIET indication
+			call	mem_alloc
+			jc		$$d
+			mov		A,#MQ_GSC_READ
+			mov		B,#MSG_QUIET_INDICATION
+			mov		R0,#0
+			mov		R1,#0
+			call	msgsnd
+
+			tistart	100
+			tistart 101
+
+			mov		A,#MQ_GSC_PRIORITY
+			call	msgchk
+			jc		$$d01
+
+$$d02		setb	GSC_DIGIPEATING
+			call	start_transmitter
+			jmp		hd_transmitter_start
+
+$$d01		jmp		hd_transmitter_suppression
+
+
+$$z			ret
+
+;----------------------------------------------------------
+;T R A N S M I T T E R   S U P P R E S S I O N
+;----------------------------------------------------------
+hd_transmitter_suppression:
+			mov		GSC_status,#PH_TRANSMITTER_SUPPRESSION
+
+			mov		A,#MQ_GSC_WRITE
+			call	msgrcv
+			jc		$$c
+			mov		A,B
+
+$$a			cjne	A,#MSG_EXPEDITED_DATA_REQUEST,$$b
+			mov		A,#MQ_GSC_PRIORITY					;add frame to priority queue
+			call	msgsnd
+			setb	GSC_DIGIPEATING						;set digipeating
+			call	start_transmitter					;start transmitter
+			jmp		hd_transmitter_start					;go transmitter start state
+
+$$b			mov		A,#MQ_GSC_NORMAL					;add to normal queue
+			call	msgsnd
+
+$$c			jnb		T100_EXPIRY,$$d
+			clr		T100_EXPIRY
+			clr		GSC_REPEATER_UP						;clear repeater up			
+
+$$d			jnb		GSC_ACQUISITION_OF_SIGNAL,$$e
+			clr		GSC_ACQUISITION_OF_SIGNAL
+			call	acquisition
+			jmp		hd_receiving
+
+$$e			;clr		GSC_LOSS_OF_SIGNAL
+
+$$f			jnb		T102_EXPIRY,$$g
+			clr		T102_EXPIRY
+			jmp		$$g01
+
+$$g			jnb		T101_EXPIRY,$$z
+			clr		T101_EXPIRY
+
+$$g01		mov		A,#MQ_GSC_PRIORITY
+			call	msgchk
+			jc		$$g03
+
+$$g02		setb	GSC_DIGIPEATING
+			call	start_transmitter
+			jmp		hd_transmitter_start
+
+$$g03		mov		DPH,AT_data					;read persistence threshold
+			mov		DPL,#AT_SBASE+120
+			movx	A,@DPTR
+			mov		R0,A
+            mov     DPTR,#PersistTab
+            mov     A,GSC_randomize
+			anl		A,#03Fh
+            movc    A,@A+DPTR
+			cjne	A,AR0,$$g03a
+			sjmp	$$g05
+$$g03a		jc		$$g05
+
+$$g04		tistart	102
+			jmp		$$z
+
+$$g05		jnb		GSC_INTERRUPTED,$$g07
+			clr		GSC_INTERRUPTED
+
+$$g06		call	start_transmitter
+			jmp		hd_transmitter_start
+
+$$g07		;resuming queue processing is not necessary
+
+			jmp		hd_ready
+
+$$z			ret
+
+
+
+;----------------------------------------------------------
+;T R A N S M I T T E R   S T A R T
+;----------------------------------------------------------
+hd_transmitter_start:
+			mov		GSC_status,#PH_TRANSMITTER_START
+
+			mov		A,#MQ_GSC_WRITE
+			call	msgrcv
+			jc		$$c
+			mov		A,B
+
+$$a			cjne	A,#MSG_EXPEDITED_DATA_REQUEST,$$b
+			mov		A,#MQ_GSC_PRIORITY					;add frame to priority queue
+			call	msgsnd
+			jmp		$$c
+
+$$b			;all other primitives
+			mov		A,#MQ_GSC_NORMAL					;add to normal queue
+			call	msgsnd
+
+$$c			jnb		T100_EXPIRY,$$d
+			clr		T100_EXPIRY
+			clr		GSC_REPEATER_UP						;clear repeater up			
+
+$$d			jnb		T104_EXPIRY,$$e
+			clr		T104_EXPIRY
+
+			setb	GSC_REPEATER_UP
+			
+			tistart	105
+
+$$e			jnb		T103_EXPIRY,$$f
+			clr		T103_EXPIRY
+
+			jnb		GSC_REPEATER_UP,$$e02
+			clr		GSC_REPEATER_UP
+
+$$e01		tistart	105
+			jmp		$$f
+
+$$e02		tistart	104
+
+$$f			jnb		T105_EXPIRY,$$z
+			clr		T105_EXPIRY
+			tistart	106
+
+			jnb		GSC_DIGIPEATING,$$f02
+			clr		GSC_DIGIPEATING
+$$f01		jmp		hd_digipeating
+
+$$f02		tistart	107
+
+			jnb		GSC_INTERRUPTED,$$f03
+			clr		GSC_INTERRUPTED
+			jmp		$$f04
+
+$$f03		mov		A,#1								;< PH-QUIET indication
+			call	mem_alloc
+			jc		$$z
+			mov		A,#MQ_GSC_READ
+			mov		B,#MSG_SEIZE_CONFIRM
+			mov		R0,#0
+			mov		R1,#0
+			call	msgsnd
+$$f04		jmp		hd_transmitting
+
+$$z			ret
+
+
+;----------------------------------------------------------
+;T R A N S M I T T I N G
+;----------------------------------------------------------
+hd_transmitting:
+			mov		GSC_status,#PH_TRANSMITTING
+
+			mov		A,#MQ_GSC_WRITE
+			call	msgrcv
+			jc		$$c
+			mov		A,B
+
+$$a			cjne	A,#MSG_EXPEDITED_DATA_REQUEST,$$b
+			mov		A,#MQ_GSC_PRIORITY					;add frame to priority queue
+			call	msgsnd
+			jmp		$$c
+
+$$b			;all other primitives
+			mov		A,#MQ_GSC_NORMAL					;add to normal queue
+			call	msgsnd
+
+$$c			mov		A,#MQ_GSC_NORMAL
+			call	msgrcv
+			jc		$$f
+			mov		A,B
+
+			cjne	A,#MSG_SEIZE_REQUEST,$$d
+			mov		A,#MQ_GSC_READ
+			mov		B,#MSG_SEIZE_CONFIRM
+			call	msgsnd
+			jmp		$$f
+
+$$d			cjne	A,#MSG_DATA_REQUEST,$$e
+			call	gsc_rawwrite
+			jmp		$$z
+
+$$e			cjne	A,#MSG_RELEASE_REQUEST,$$e
+			call	mem_free
+
+			mov		T107,#0
+			clr		T107_EXPIRY
+
+			clr		GSC_INTERRUPTED
+
+$$e01		;suspending queue processing is not necessary
+
+			mov		A,#MQ_GSC_PRIORITY
+			call	msgchk
+			jc		$$e03
+
+$$e02		;resume of queue processing is not necessary
+
+			setb	GSC_DIGIPEATING
+			jmp		hd_digipeating
+
+$$e03		mov		T106,#0
+			clr		T106_EXPIRY
+			jmp		$$g01
+
+
+$$f			jnb		T107_EXPIRY,$$g
+			clr		T107_EXPIRY
+			setb	GSC_INTERRUPTED
+			jmp		$$e01
+
+$$g			jnb		T106_EXPIRY,$$z
+			clr		T106_EXPIRY
+
+			mov		T107,#0
+			clr		T107_EXPIRY
+
+			setb	GSC_INTERRUPTED
+
+			;suspending queue processing is not necessary
+
+$$g01		call	gsc_transmit_off
+			call	gsc_receive_on
+			tistart	108
+			jmp		hd_receiver_start
+
+$$z			ret
+
+;----------------------------------------------------------
+;D I G I P E A T I N G
+;----------------------------------------------------------
+hd_digipeating:
+			mov		GSC_status,#PH_DIGIPEATING
+
+			mov		A,#MQ_GSC_WRITE
+			call	msgrcv
+			jc		$$c
+			mov		A,B
+
+$$a			cjne	A,#MSG_EXPEDITED_DATA_REQUEST,$$b
+			mov		A,#MQ_GSC_PRIORITY					;add frame to priority queue
+			call	msgsnd
+			jmp		$$c
+
+$$b			;all other primitives
+			mov		A,#MQ_GSC_NORMAL
+			call	msgsnd
+
+$$c			jnb		T106_EXPIRY,$$d
+			clr		T106_EXPIRY
+
+$$c01		call	gsc_transmit_off
+			clr		GSC_DIGIPEATING
+			tistart	108
+			jmp		hd_receiver_start
+
+$$d			mov		A,#MQ_GSC_PRIORITY
+			call	msgsnd
+			jc		$$c01
+
+$$e			cjne	A,#MSG_EXPEDITED_DATA_REQUEST,$$f
+			call	gsc_rawwrite
+			jmp		$$z
+
+$$f			call	mem_free
+
+$$z			ret
+
+
+
+;----------------------------------------------------------
+;R E C E I V E R   S T A R T 
+;----------------------------------------------------------
+hd_receiver_start:
+			mov		GSC_status,#PH_RECEIVER_START
+
+			mov		A,#MQ_GSC_WRITE
+			call	msgrcv
+			jc		$$c
+			mov		A,B
+
+$$a			cjne	A,#MSG_EXPEDITED_DATA_REQUEST,$$b
+			mov		A,#MQ_GSC_PRIORITY					;add frame to priority queue
+			call	msgsnd
+			jmp		$$c
+
+$$b			;all other primitives
+			mov		A,#MQ_GSC_NORMAL
+			call	msgsnd
+
+$$c			jnb		T108_EXPIRY,$$z
+			clr		T108_EXPIRY
+			tistart	100
+			tistart	101
+
+			mov		A,#1								;< PH-QUIET indication
+			call	mem_alloc
+			jc		$$c01
+			mov		A,#MQ_GSC_READ
+			mov		B,#MSG_QUIET_INDICATION
+			mov		R0,#0
+			mov		R1,#0
+			call	msgsnd
+			jmp		hd_transmitter_suppression
+
+$$c01		setb	T108_EXPIRY
+
+$$z			ret
+
+;----------------------------------------------------------
+;S T A R T   T R A N S M I T T E R
+;----------------------------------------------------------
+start_transmitter:
+			;suspending queue processing is not necessary
+
+			mov		T101,#0
+			clr		T101_EXPIRY
+			mov		T102,#0
+			clr		T102_EXPIRY
+			mov		T103,#0
+			clr		T103_EXPIRY
+			mov		T104,#0
+			clr		T104_EXPIRY
+			mov		T105,#0
+			clr		T105_EXPIRY
+			mov		T106,#0
+			clr		T106_EXPIRY
+			mov		T107,#0
+			clr		T107_EXPIRY
+			mov		T108,#0
+			clr		T108_EXPIRY
+
+			tistart	103
+
+			mov		A,#1								;< PH-QUIET indication
+			call	mem_alloc
+			jc		$$a
+			mov		A,#MQ_GSC_READ
+			mov		B,#MSG_BUSY_INDICATION
+			mov		R0,#0
+			mov		R1,#1
+			call	msgsnd
+$$a			call	gsc_receive_off
+			jmp		gsc_transmit_on
+
+acquisition:
+			setb	GSC_REPEATER_UP
+
+			mov		T100,#0
+			clr		T100_EXPIRY
+			mov		T101,#0
+			clr		T101_EXPIRY
+			mov		T102,#0
+			clr		T102_EXPIRY
+			mov		T103,#0
+			clr		T103_EXPIRY
+			mov		T104,#0
+			clr		T104_EXPIRY
+			mov		T105,#0
+			clr		T105_EXPIRY
+			mov		T106,#0
+			clr		T106_EXPIRY
+			mov		T107,#0
+			clr		T107_EXPIRY
+			mov		T108,#0
+			clr		T108_EXPIRY
+
+			mov		A,#1								;< PH-QUIET indication
+			call	mem_alloc
+			jc		$$z
+			mov		A,#MQ_GSC_READ
+			mov		B,#MSG_BUSY_INDICATION
+			mov		R0,#0
+			mov		R1,#0
+			call	msgsnd
+
+$$z			ret
+			ENDP
+
+
+PersistTab:
+        db 226,125,65,173,237,136,217,237,80,61,103,134,250,26,119,164
+        db 239,145,84,129,71,253,241,59,162,144,141,181,147,226,100,4
+        db 89,206,45,68,19,93,140,66,12,222,0,53,1,8,125,30
+        db 136,254,116,255,56,238,209,136,243,240,110,14,144,208,235,121
+
+
+    ENDIF   ;GSC_SRC
+

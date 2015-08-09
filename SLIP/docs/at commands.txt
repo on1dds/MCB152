@@ -1,0 +1,76 @@
+  AT - ATtention command defines speed and precedes common line
+  A/ - Re-executes the last command line if modem has not made a
+       connection
+  A  - Modem goes off-hook in answer mode
+  B  - dummy
+  C  - Set source address (callsign)
+  DT - Connect destination address (path) following DT in command line
+  DP - Connect destination address (path) following DP in command line
+  E0 - Disable modem echo back to the terminal
+ *E1 - Enable modem echo back to the terminal
+ *F0 - Sets modem to half duplex
+  F1 - Sets modem to full duplex
+  F2 - Sets modem to full duplex with PTT pressed continuously
+  H  - Modem goes on-hook (hangs up)
+  I0 - Displays the product Identification Code
+  I1 - Performs checksum on firmware ROM and displays the value
+  I2 - Performs checksum on firmware ROM and returns Error or OK
+  I3 - Show firmware version
+  I4 - Show compilation date
+  I5 - Show hardware type
+  I6 - Show target clockspeed
+  I7 - Show target modem type
+  I8 - Show coder information
+
+  Lx - dummy
+  Mx - dummy
+  O0 - Return to online
+  O1 - Return to online with retrain
+ *Q0 - Modem returns result codes
+  Q1 - Modem does not display result codes
+  Sr=n - Set S register r to value n
+  Sr? - Display contents of S register
+  Sr?? - Display contents of double (16 bit) S register
+  V0 - Short numeric result codes
+ *V1 - Full result codes
+ *X0 - CONNECT, result codes enabled
+  X1 - CONNECT BBBB result codes enabled, blind dial,
+       busy signal not detected
+  X2 - Modem waits for dial tone before dialing, all CONNECT BBB
+       result codes enabled, busy signal not detected
+  X3 - Modem blind dials, all CONNECT BBBB results codes enabled,
+       modem sends BUSY if busy signal is detected
+  X4 - Modem waits for dial tone before dialing, all CONNECT BBBB
+       results codes enabled, modem sends BUSY if busy signal is
+       detected
+ *Y0  - dummy
+  Z   - Load stored profile configuration
+  &C0 - DCD always ON
+  &C1 - DCD ON if data carrier is present
+  &D0 - Modem ignores DTR
+  &D1 - Modem assumes command state with an ON-to-OFF transition on DTR
+ *&D2 - Modem hangs up, assumes command state and disables auto
+        answer once detecting ON-to-OFF transition on DTR
+  &D3 - Modem assumes initialization state with an ON-to-OFF
+        transition to DTR
+  &F  - Load factory profile configuration
+  &G0 - No guard tone
+  &L0 - Selects dialup line
+  &L1 - Selects leased line
+  &P0 - Pulse dial make/break ratio 39/61 (USA/Canada)
+  &P1 - Pulse dial make/break ratio 33/67 (UK/HK)
+  &R0 - CTS follows RTS
+  &R1 - Modem ignores RTS; CTS is always on
+  &S0 - DSR is always ON
+  &S1 - DSR is compatible with EIA RS-232C
+  &T0 - normal mode
+  &T1 - local loopback test (echo)
+  &T2 - RESERVED
+  &T3 - RESERVED
+  &T4 - remote loopback (retransmit received frames only and unchanged)
+  &T5 - ASCII connect
+  &T6 - RESERVED
+  &T7 - RESERVED
+  &T8 - RESERVED
+  &W -  Write present profile configuration to nonvolatile RAM
+  &Z  - Stores a phone number in nonvolatile RAM

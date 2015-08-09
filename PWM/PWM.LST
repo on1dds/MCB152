@@ -1,0 +1,430 @@
+ AS V1.42 Beta [Bld 15] - source file pwm.src - page 1 - 9/24/2001 18:17:25
+
+
+       1/       0 :                     
+       2/       0 :                     			CPU     8051
+       3/       0 :                     
+       4/       0 :                     			INCLUDE	"as.inc"				;extend	pseudo instructions
+(1)    1/       0 : =>UNDEFINED             IFNDEF  AS_INC
+(1)    2/       0 : =1H                 AS_INC  EQU 1
+(1)    3/       0 :                     ;**
+(1)    4/       0 :                     ;**     $Filename: as.src
+(1)    5/       0 :                     ;**     $Release: 0
+(1)    6/       0 :                     ;**     $Revision: 1
+(1)    7/       0 :                     ;**     $Date: 15/11/2000
+(1)    8/       0 :                     ;**     $Coding: Joachim Elen
+(1)    9/       0 :                     ;**     
+(1)   10/       0 :                     ;**
+(1)   11/       0 :                     ;**     assembler extensions
+(1)   12/       0 :                     ;**		pseudo instructions
+(1)   13/       0 :                     ;**
+(1)   14/       0 :                     
+(1)   15/       0 : =0H                 H       EQU         0
+(1)   16/       0 : =1H                 L       EQU         1
+(1)   17/       0 :                     
+(1)   18/       0 :                     HIGH    function    num,((num>>8)&0FFh)
+(1)   19/       0 :                     high    function    num,((num>>8)&0FFh)
+(1)   20/       0 :                     HI      function    num,((num>>8)&0FFh)
+(1)   21/       0 :                     hi      function    num,((num>>8)&0FFh)
+(1)   22/       0 :                     LOW     function    num,(num&0FFh)
+(1)   23/       0 :                     low     function    num,(num&0FFh)
+(1)   24/       0 :                     LO      function    num,(num&0FFh)
+(1)   25/       0 :                     lo      function    num,(num&0FFh)
+(1)   26/       0 :                     
+(1)   27/       0 :                     PROC    MACRO   name
+(1)   28/       0 :                             SECTION name
+(1)   29/       0 :                             PUBLIC  name:PARENT
+(1)   30/       0 :                     name    LABEL   $
+(1)   31/       0 :                             ENDM
+(1)   32/       0 :                     
+(1)   33/       0 :                     
+(1)   34/       0 :                     ENDP    MACRO   name
+(1)   35/       0 :                             ENDSECTION  name
+(1)   36/       0 :                             ENDM
+(1)   37/       0 :                     
+(1)   38/       0 :                     
+(1)   39/       0 :                         ENDIF   ;AS_INC
+(1)   40/       0 :                     
+       5/       0 :                     			INCLUDE	"80c152.inc"			;assign	8052 register names
+(1)    1/       0 : =>UNDEFINED         	IFNDEF	C152INC
+(1)    2/       0 : =1H                 C152INC		EQU	TRUE
+(1)    3/       0 :                     ;****************************************************************************
+(1)    4/       0 :                     ;*                                                                          *
+(1)    5/       0 :                     ;*   AS 1.41 - 80C152.INC                                                   *
+(1)    6/       0 :                     ;*                                                                          *
+(1)    7/       0 :                     ;*   SFR- and bitdefinition for 80c152 microcontroller                      *
+(1)    8/       0 :                     ;*                                                                          *
+(1)    9/       0 :                     ;*   Last changes:                                                          *
+(1)   10/       0 :                     ;*                                                                          *
+(1)   11/       0 :                     ;*              25.07.2000      basic definitions                           *
+(1)   12/       0 :                     ;*                                                                          *
+(1)   13/       0 :                     ;****************************************************************************
+(1)   14/       0 :                     		SAVE
+(1)  218/       0 :                     		RESTORE		;wieder erlauben
+ AS V1.42 Beta [Bld 15] - source file pwm.src(80c152.inc) - page 2 - 9/24/2001 18:17:25
+
+
+(1)  219/       0 :                     	ENDIF
+(1)  220/       0 :                     
+(1)  221/       0 :                     
+       6/       0 :                     
+       7/       0 :                     ;adjustable parameters
+       8/       0 : =E10000H            XTAL		EQU		14745600 				;XTAL frequency
+       9/       0 : =28H                RES			EQU		40						;PWM resolution (steps)
+      10/       0 : =64H                IVAL		EQU		100						;intervals per second
+      11/       0 :                     
+      12/       0 :                     ;fixed, internal constant
+      13/       0 : =FFFFFFFFFFF..      TVAL		EQU		-(XTAL/12)/(RES*IVAL)	;internal timer value
+      14/       0 :                     
+      15/       0 :                     setline		MACRO	reg,line
+      16/       0 :                     			cjne	A,reg,$+7
+      17/       0 :                     			clr		line
+      18/       0 :                     			sjmp	$+6
+      19/       0 :                     			jc		$-4
+      20/       0 :                     			setb	line
+      21/       0 :                     			ENDM
+      22/       0 :                     
+      23/      30 :                                 SEGMENT DATA
+      24/      30 :                     pwm_counter	db		?
+      25/      31 :                     pwm_top		db		?
+      26/      32 :                     pwm_tvalh	db		?
+      27/      33 :                     pwm_tvall	db		?
+      28/      34 :                     
+      29/      34 :                     pwm_p1		db		?
+      30/      35 :                     pwm_p2		db		?
+      31/      36 :                     pwm_p3		db		?
+      32/      37 :                     pwm_p4		db		?
+      33/      38 :                     pwm_p5		db		?
+      34/      39 :                     pwm_p6		db		?
+      35/      3A :                     
+      36/       0 :                                 SEGMENT CODE
+      37/       0 :                     
+      38/       0 :                     			ORG		0000h
+      39/       0 : 21 00               			jmp		start
+      40/       2 :                     
+      41/       B :                     			ORG		000Bh
+      42/       B : 21 41               			jmp		pwm_int
+      43/       D :                     
+      44/     100 :                     			ORG		0100h
+      45/     100 : 78 FE               start:		mov		R0,#HIGH(TVAL)
+      46/     102 : 79 CD               			mov		R1,#LOW(TVAL)
+      47/     104 : 74 28               			mov		A,#RES
+      48/     106 : 31 1C               			call	pwm_init
+      49/     108 :                     
+      50/     108 : 75 34 00            			mov		pwm_p1,#0
+      51/     10B : 75 35 04            			mov		pwm_p2,#4
+      52/     10E : 75 36 08            			mov		pwm_p3,#8
+      53/     111 : 75 37 0C            			mov		pwm_p4,#12
+      54/     114 : 75 38 10            			mov		pwm_p5,#16 
+      55/     117 : 75 39 14            			mov		pwm_p6,#20
+      56/     11A :                     
+      57/     11A : 80 FE               			jmp		$							;
+      58/     11C :                     
+      59/     11C :                     
+      60/     11C :                     pwm_init:
+      61/     11C :                     ;====================================================
+      62/     11C :                     ;INPUT:	R0	Timer high value
+ AS V1.42 Beta [Bld 15] - source file pwm.src - page 3 - 9/24/2001 18:17:25
+
+
+      63/     11C :                     ;		R1	Timer low value
+      64/     11C :                     ;		ACC	counter boundary
+      65/     11C :                     ;====================================================
+      66/     11C : F5 31               			mov		pwm_top,A
+      67/     11E : 88 32               			mov		pwm_tvalh,R0
+      68/     120 : 89 33               			mov		pwm_tvall,R1
+      69/     122 : 75 30 00            			mov		pwm_counter,#0
+      70/     125 : 53 88 CC            			anl		TCON,#11001100b			;stop timer 0
+      71/     128 : 53 89 F0            			anl		TMOD,#11110000b			;set timer mode
+      72/     12B : 43 89 01            			orl		TMOD,#00000001b
+      73/     12E : 85 32 8C            			mov		TH0,pwm_tvalh
+      74/     131 : 85 33 8A            			mov		TL0,pwm_tvall
+      75/     134 : D2 8C               			setb	TR0
+      76/     136 : D2 A9               			setb	ET0
+      77/     138 : D2 AF               			setb	EA
+      78/     13A : 22                  			ret
+      79/     13B :                     
+      80/     13B : C2 A9               pwm_hold:	clr		ET0
+      81/     13D : 75 C0 FF            			mov		P4 ,#0FFh
+      82/     140 : 22                  			ret
+      83/     141 :                     
+      84/     141 : C0 D0               pwm_int:	push	PSW
+      85/     143 : C0 E0               			push	ACC
+      86/     145 : C2 8C               			clr		TR0
+      87/     147 : 53 89 F0            			anl		TMOD,#11110000b
+      88/     14A : 43 89 01            			orl		TMOD,#00000001b
+      89/     14D : 85 32 8C            			mov		TH0,pwm_tvalh
+      90/     150 : 85 33 8A            			mov		TL0,pwm_tvall
+      91/     153 : D2 8C               			setb	TR0
+      92/     155 :                     
+      93/     155 : E5 30               			mov		A,pwm_counter
+      94/     157 : (MACRO)             			setline	pwm_p1,P4.0				;change these to any other port
+      94/     157 : B5 34 04                                    cjne    A,pwm_p1,$+7
+      94/     15A : C2 C0                                       clr             P4.0
+      94/     15C : 80 04                                       sjmp    $+6
+      94/     15E : 40 FA                                       jc              $-4
+      94/     160 : D2 C0                                       setb    P4.0
+      95/     162 : (MACRO)             			setline	pwm_p2,P4.1				;if you need and append
+      95/     162 : B5 35 04                                    cjne    A,pwm_p2,$+7
+      95/     165 : C2 C1                                       clr             P4.1
+      95/     167 : 80 04                                       sjmp    $+6
+      95/     169 : 40 FA                                       jc              $-4
+      95/     16B : D2 C1                                       setb    P4.1
+      96/     16D : (MACRO)             			setline	pwm_p3,P4.2				;additional pwm lines below
+      96/     16D : B5 36 04                                    cjne    A,pwm_p3,$+7
+      96/     170 : C2 C2                                       clr             P4.2
+      96/     172 : 80 04                                       sjmp    $+6
+      96/     174 : 40 FA                                       jc              $-4
+      96/     176 : D2 C2                                       setb    P4.2
+      97/     178 : (MACRO)             			setline	pwm_p4,P4.3
+      97/     178 : B5 37 04                                    cjne    A,pwm_p4,$+7
+      97/     17B : C2 C3                                       clr             P4.3
+      97/     17D : 80 04                                       sjmp    $+6
+      97/     17F : 40 FA                                       jc              $-4
+      97/     181 : D2 C3                                       setb    P4.3
+      98/     183 : (MACRO)             			setline	pwm_p5,P4.4
+      98/     183 : B5 38 04                                    cjne    A,pwm_p5,$+7
+      98/     186 : C2 C4                                       clr             P4.4
+      98/     188 : 80 04                                       sjmp    $+6
+      98/     18A : 40 FA                                       jc              $-4
+ AS V1.42 Beta [Bld 15] - source file pwm.src - page 4 - 9/24/2001 18:17:25
+
+
+      98/     18C : D2 C4                                       setb    P4.4
+      99/     18E : (MACRO)             			setline	pwm_p6,P4.5
+      99/     18E : B5 39 04                                    cjne    A,pwm_p6,$+7
+      99/     191 : C2 C5                                       clr             P4.5
+      99/     193 : 80 04                                       sjmp    $+6
+      99/     195 : 40 FA                                       jc              $-4
+      99/     197 : D2 C5                                       setb    P4.5
+     100/     199 :                     
+     101/     199 : B5 31 01            			cjne	A,pwm_top,pwm_cnt
+     102/     19C : E4                  			clr		A
+     103/     19D : 04                  pwm_cnt:	inc		A
+     104/     19E : F5 30               			mov		pwm_counter,A
+     105/     1A0 :                     
+     106/     1A0 : D0 E0               			pop		ACC
+     107/     1A2 : D0 D0               			pop		PSW
+     108/     1A4 : 32                  			reti
+     109/     1A5 :                     
+ AS V1.42 Beta [Bld 15] - source file pwm.src - page 5 - 9/24/2001 18:17:25
+
+
+  symbol table (* = unused):
+  ------------------------
+
+*AC :                            D6 B |  ACC :                           E0 D |
+*ACC.0 :                         E0 B | *ACC.1 :                         E1 B |
+*ACC.2 :                         E2 B | *ACC.3 :                         E3 B |
+*ACC.4 :                         E4 B | *ACC.5 :                         E5 B |
+*ACC.6 :                         E6 B | *ACC.7 :                         E7 B |
+*ADR0 :                          95 D | *ADR1 :                          A5 D |
+*ADR2 :                          B5 D | *ADR3 :                          C5 D |
+*AE :                            ED B | *AMSK0 :                         D5 D |
+*AMSK1 :                         E5 D | *AR0 :                            0 D |
+*AR1 :                            1 D | *AR2 :                            2 D |
+*AR3 :                            3 D | *AR4 :                            4 D |
+*AR5 :                            5 D | *AR6 :                            6 D |
+*AR7 :                            7 D | *ARCHITECTURE :  i386-unknown-win32 - |
+*AS_INC :                         1 - | *B :                             F0 D |
+*B.0 :                           F0 B | *B.1 :                           F1 B |
+*B.2 :                           F2 B | *B.3 :                           F3 B |
+*B.4 :                           F4 B | *B.5 :                           F5 B |
+*B.6 :                           F6 B | *B.7 :                           F7 B |
+*BAUD :                          94 D | *BCRH0 :                         E3 D |
+*BCRH1 :                         F3 D | *BCRL0 :                         E2 D |
+*BCRL1 :                         F2 D | *BIGENDIAN :                      0 - |
+*BKOFF :                         C4 D | *BRANCHEXT :                      0 - |
+*C152INC :                        1 - | *CASESENSITIVE :                  1 - |
+*CONSTPI :        3.141592653589793 - | *CRCE :                          EC B |
+*CY :                            D7 B | *DARH0 :                         C3 D |
+*DARH1 :                         D3 D | *DARL0 :                         C2 D |
+*DARL1 :                         D2 D | *DATE :                   9/24/2001 - |
+*DCON0 :                         92 D | *DCON1 :                         93 D |
+*DEN :                           92 B | *DMA :                           D8 B |
+*DPH :                           83 D | *DPL :                           82 D |
+ EA :                            AF B | *EDMA0 :                         CA B |
+*EDMA1 :                         CC B | *EGSRE :                         C9 B |
+*EGSRV :                         C8 B | *EGSTE :                         CD B |
+*EGSTV :                         CB B | *ES :                            AC B |
+ ET0 :                           A9 B | *ET1 :                           AB B |
+*EX0 :                           A8 B | *EX1 :                           AA B |
+*F0 :                            D5 B | *F1 :                            D1 B |
+*FALSE :                          0 - | *FULLPMMU :                       1 - |
+*GMOD :                          84 D | *GREN :                          E9 B |
+*GRXD :                          90 B | *GTXD :                          91 B |
+*H :                              0 - | *HAS64 :                          1 - |
+*HASFPU :                         0 - | *HASPMMU :                        0 - |
+*HBAEN :                         E8 B | *HLD :                           95 B |
+*HLDA :                          96 B | *IE :                            A8 D |
+ IE.0 :                          A8 B |  IE.1 :                          A9 B |
+ IE.2 :                          AA B |  IE.3 :                          AB B |
+ IE.4 :                          AC B | *IE.5 :                          AD B |
+*IE.6 :                          AE B |  IE.7 :                          AF B |
+*IE0 :                           89 B | *IE1 :                           8B B |
+*IEN1 :                          C8 D |  IEN1.0 :                        C8 B |
+ IEN1.1 :                        C9 B |  IEN1.2 :                        CA B |
+ IEN1.3 :                        CB B |  IEN1.4 :                        CC B |
+ IEN1.5 :                        CD B | *IEN1.6 :                        CE B |
+*IEN1.7 :                        CF B | *IFS :                           A4 D |
+*INEXTMODE :                      0 - | *INLWORDMODE :                    0 - |
+*INMAXMODE :                      0 - | *INSRCMODE :                      0 - |
+*INSUPMODE :                      0 - | *INT0 :                          B2 B |
+ AS V1.42 Beta [Bld 15] - source file pwm.src - page 6 - 9/24/2001 18:17:25
+
+
+*INT1 :                          B3 B | *IP :                            B8 D |
+ IP.0 :                          B8 B |  IP.1 :                          B9 B |
+ IP.2 :                          BA B |  IP.3 :                          BB B |
+ IP.4 :                          BC B | *IP.5 :                          BD B |
+*IP.6 :                          BE B | *IP.7 :                          BF B |
+*IPN1 :                          F8 D |  IPN1.0 :                        F8 B |
+ IPN1.1 :                        F9 B |  IPN1.2 :                        FA B |
+ IPN1.3 :                        FB B |  IPN1.4 :                        FC B |
+ IPN1.5 :                        FD B | *IPN1.6 :                        FE B |
+*IPN1.7 :                        FF B | *IT0 :                           88 B |
+*IT1 :                           8A B |  IVAL :                          64 - |
+*L :                              1 - | *LISTON :                         1 - |
+*LNI :                           DF B | *MACEXP :                         1 - |
+*MOMCPU :                      8051 - |  MOMCPUNAME :                  8051 - |
+*MYSLOT :                        F5 D | *NESTMAX :                      100 - |
+*NOACK :                         DE B | *OV :                            D2 B |
+*OVR :                           EF B | *P :                             D0 B |
+*P0 :                            80 D | *P0.0 :                          80 B |
+*P0.1 :                          81 B | *P0.2 :                          82 B |
+*P0.3 :                          83 B | *P0.4 :                          84 B |
+*P0.5 :                          85 B | *P0.6 :                          86 B |
+*P0.7 :                          87 B | *P1 :                            90 D |
+ P1.0 :                          90 B |  P1.1 :                          91 B |
+ P1.2 :                          92 B |  P1.3 :                          93 B |
+ P1.4 :                          94 B |  P1.5 :                          95 B |
+ P1.6 :                          96 B | *P1.7 :                          97 B |
+*P2 :                            A0 D | *P2.0 :                          A0 B |
+*P2.1 :                          A1 B | *P2.2 :                          A2 B |
+*P2.3 :                          A3 B | *P2.4 :                          A4 B |
+*P2.5 :                          A5 B | *P2.6 :                          A6 B |
+*P2.7 :                          A7 B | *P3 :                            B0 D |
+ P3.0 :                          B0 B |  P3.1 :                          B1 B |
+ P3.2 :                          B2 B |  P3.3 :                          B3 B |
+ P3.4 :                          B4 B |  P3.5 :                          B5 B |
+ P3.6 :                          B6 B |  P3.7 :                          B7 B |
+ P4 :                            C0 D |  P4.0 :                          C0 B |
+ P4.1 :                          C1 B |  P4.2 :                          C2 B |
+ P4.3 :                          C3 B |  P4.4 :                          C4 B |
+ P4.5 :                          C5 B | *P4.6 :                          C6 B |
+*P4.7 :                          C7 B | *P5 :                            91 D |
+*P6 :                            A1 D | *PACKING :                        0 - |
+*PADDING :                        1 - | *PCON :                          87 D |
+*PDMA0 :                         FA B | *PDMA1 :                         FC B |
+*PGSRE :                         F9 B | *PGSRV :                         F8 B |
+*PGSTE :                         FD B | *PGSTV :                         FB B |
+*PRBS :                          E4 D | *PS :                            BC B |
+ PSW :                           D0 D |  PSW.0 :                         D0 B |
+ PSW.1 :                         D1 B |  PSW.2 :                         D2 B |
+ PSW.3 :                         D3 B |  PSW.4 :                         D4 B |
+ PSW.5 :                         D5 B |  PSW.6 :                         D6 B |
+ PSW.7 :                         D7 B | *PT0 :                           B9 B |
+*PT1 :                           BB B | *PX0 :                           B8 B |
+*PX1 :                           BA B | *R0 :                             0 D |
+*R1 :                             1 D | *R2 :                             2 D |
+*R3 :                             3 D | *R4 :                             4 D |
+*R5 :                             5 D | *R6 :                             6 D |
+*R7 :                             7 D | *RB8 :                           9A B |
+*RCABT :                         EE B | *RD :                            B7 B |
+*RDN :                           EB B | *RELAXED :                        0 - |
+*REN :                           9C B |  RES :                           28 - |
+ AS V1.42 Beta [Bld 15] - source file pwm.src - page 7 - 9/24/2001 18:17:25
+
+
+*RFIFO :                         F4 D | *RFNE :                          EA B |
+*RI :                            98 B | *RS0 :                           D3 B |
+*RS1 :                           D4 B | *RSTAT :                         E8 D |
+ RSTAT.0 :                       E8 B |  RSTAT.1 :                       E9 B |
+ RSTAT.2 :                       EA B |  RSTAT.3 :                       EB B |
+ RSTAT.4 :                       EC B |  RSTAT.5 :                       ED B |
+ RSTAT.6 :                       EE B |  RSTAT.7 :                       EF B |
+*RXC :                           94 B | *RXD :                           B0 B |
+*SARH0 :                         A3 D | *SARH1 :                         B3 D |
+*SARL0 :                         A2 D | *SARL1 :                         B2 D |
+*SBUF :                          99 D | *SCON :                          98 D |
+ SCON.0 :                        98 B |  SCON.1 :                        99 B |
+ SCON.2 :                        9A B |  SCON.3 :                        9B B |
+ SCON.4 :                        9C B |  SCON.5 :                        9D B |
+ SCON.6 :                        9E B |  SCON.7 :                        9F B |
+*SLOTTM :                        B4 D | *SM0 :                           9F B |
+*SM1 :                           9E B | *SM2 :                           9D B |
+*SP :                            81 D | *T0 :                            B4 B |
+*T1 :                            B5 B | *TB8 :                           9B B |
+*TCDCNT :                        D4 D | *TCDT :                          DC B |
+ TCON :                          88 D |  TCON.0 :                        88 B |
+ TCON.1 :                        89 B |  TCON.2 :                        8A B |
+ TCON.3 :                        8B B |  TCON.4 :                        8C B |
+ TCON.5 :                        8D B |  TCON.6 :                        8E B |
+ TCON.7 :                        8F B | *TDN :                           DB B |
+*TEN :                           D9 B | *TF0 :                           8D B |
+*TF1 :                           8F B | *TFIFO :                         85 D |
+*TFNF :                          DA B |  TH0 :                           8C D |
+*TH1 :                           8D D | *TI :                            99 B |
+*TIME :                    18:17:25 - |  TL0 :                           8A D |
+*TL1 :                           8B D |  TMOD :                          89 D |
+ TR0 :                           8C B | *TR1 :                           8E B |
+ TRUE :                           1 - | *TSTAT :                         D8 D |
+ TSTAT.0 :                       D8 B |  TSTAT.1 :                       D9 B |
+ TSTAT.2 :                       DA B |  TSTAT.3 :                       DB B |
+ TSTAT.4 :                       DC B |  TSTAT.5 :                       DD B |
+ TSTAT.6 :                       DE B |  TSTAT.7 :                       DF B |
+ TVAL :            FFFFFFFFFFFFFECD - | *TXC :                           93 B |
+*TXD :                           B1 B | *UR :                            DD B |
+*VERSION :                     142F - | *WR :                            B6 B |
+ XTAL :                      E10000 - | *bank0 :                          0 - |
+*bank1 :                          1 - | *bank2 :                          2 - |
+*bank3 :                          3 - |  pwm_cnt :                      19D C |
+ pwm_counter :                   30 D | *pwm_hold :                     13B C |
+ pwm_init :                     11C C |  pwm_int :                      141 C |
+ pwm_p1 :                        34 D |  pwm_p2 :                        35 D |
+ pwm_p3 :                        36 D |  pwm_p4 :                        37 D |
+ pwm_p5 :                        38 D |  pwm_p6 :                        39 D |
+ pwm_top :                       31 D |  pwm_tvalh :                     32 D |
+ pwm_tvall :                     33 D |  start :                        100 C |
+
+    334 symbols
+    220 unused symbols
+
+ AS V1.42 Beta [Bld 15] - source file pwm.src - page 8 - 9/24/2001 18:17:25
+
+
+  defined macros:
+  ---------------
+
+ENDP                                  | PROC                                 
+setline                               | using                                
+
+      4 macros
+
+ AS V1.42 Beta [Bld 15] - source file pwm.src - page 9 - 9/24/2001 18:17:25
+
+
+  defined functions:
+  ------------------
+
+lo                                    | LO                                   
+low                                   | LOW                                  
+hi                                    | HI                                   
+high                                  | HIGH                                 
+
+ AS V1.42 Beta [Bld 15] - source file pwm.src - page 10 - 9/24/2001 18:17:25
+
+
+  codepages:
+  ----------
+
+STANDARD (0 changed characters)
+
+
+0.49 seconds assembly time
+
+    370 lines source file
+    400 lines incl. macro expansions
+      2 passes
+      0 errors
+      0 warnings

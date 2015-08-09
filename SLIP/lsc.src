@@ -1,0 +1,543 @@
+	IFNDEF  LSC_SRC
+LSC_SRC	 EQU TRUE
+;**
+;**		$Filename: lsc.src
+;**		$Release: 0
+;**		$Revision: 1
+;**		$Date: 14/11/2000
+;**		$Coding: Joachim Elen
+;**	 
+;**
+;**		Local Serial Channel Device driver
+;**
+
+LSC_RBUFSIZE EQU	1*4						;256 byte blocks
+LSC_WBUFSIZE EQU	2*4						;256 byte blocks
+LSC_XTAL	EQU	14745600/12				;boosted duration of 1 cycle
+
+
+			CPU	 8051
+			LISTING OFF
+            INCLUDE "as.inc"			;extend pseudo instructions
+            INCLUDE "80c152.inc"		;assign 80152 register names
+			INCLUDE	"mcb152.inc"
+			INCLUDE "ascii.inc"			;assign ASCII character names
+			INCLUDE "macros.inc"		;macro definitions
+			INCLUDE "malloc.src"
+			INCLUDE "include\device.inc"
+			LISTING ON
+
+
+			SEGMENT DATA
+;buffers
+LSC_rbuf		db  ?					;read from LSC buffer
+LSC_rout		db  ?,?					;rbuffer out [lsc_read] (HIGH,LOW)
+LSC_rin			db	?,?					;rbuffer in  [S-INT]    (HIGH,LOW)
+LSC_ralloc		db	?,?					;rbuffer allocated memory
+
+LSC_wbuf		db  ?					;write to LSC buffer
+LSC_walloc		db  ?,?					;wbuffer allocated memory
+LSC_win			db  ?,?					;wbuffer in [lsc_write] (HIGH,LOW)
+LSC_wout		db  ?,?					;wbuffer out (HIGH,LOW)
+
+			SEGMENT BITDATA
+LSC_OPEN		db  ?					;set if device is open
+LSC_WDONE		db  ?					;lsc wbuffer is empty
+
+			SEGMENT CODE
+
+;-------------------------------------------------------------------------
+			PROC	lsc_open
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;-------------------------------------------------------------------------
+			push	ACC
+			jb		LSC_OPEN,$$exit
+			mov		A,#LSC_RBUFSIZE		;alloc block for read buffer
+			call	mem_alloc
+			jc		$$err1
+			mov		LSC_rbuf,DPH
+			mov		A,#LSC_WBUFSIZE		;alloc block for write buffer
+			call	mem_alloc
+			jc		$$err2
+			mov		LSC_wbuf,DPH
+			pop		ACC
+			call	baudchk
+
+$$ok		setb	LSC_OPEN			;set device open indicator
+			mov		A,#CMD_RESET			;setup device hardware
+			call	lsc_ioctl
+$$exit:		clr		C
+			ret
+
+$$err2:		mov		DPH,LSC_rbuf
+			call	mem_free
+$$err1:		setb	C
+			pop		ACC
+			ret
+
+baudchk:	cje		A,#LSC_X230400,baud_230k
+			cje		A,#LSC_X460800,baud_460k
+			cje		A,#LSC_AUTO,baud_auto
+
+baud_normal:
+;----------------------------------
+;set serial port in normal mode
+;----------------------------------
+			clr		TR1
+			mov		TH1,A
+			mov		TL1,A
+			mov		TMOD,#21h
+			mov		PCON,#80h
+			mov		SCON,#52h
+			setb	TR1
+			ret
+
+baud_460k:
+;----------------------------------
+;set serial port in mode 2 (1/32)
+;----------------------------------
+			mov     SCON,#10010000b
+            mov     PCON,#10000000b
+			ret
+
+baud_230k:
+;----------------------------------
+;set serial port in mode 2 (1/64)
+;----------------------------------
+			mov     SCON,#10010000b
+            mov     PCON,#00000000b
+			ret
+
+baud_auto:
+;----------------------------------
+;set serial port in mode 2 (1/64)
+;----------------------------------
+			pushm	AR0,AR1,AR2,AR3,AR4,AR5,AR6,AR7,DPH,DPL
+			push	IE				;disable interrupts
+			clr		EA
+
+			mov		A,#20
+			IFDEF	Delay
+				call	Delay
+			ELSEIF
+				jz		$$exit
+				anl		TMOD,#11110000b
+				orl		TMOD,#00000001b
+$$loop:			clr		TF0
+				clr		TR0
+				mov		TH0,#HIGH ((LSC_XTAL/1000)*10)	;10 miliseconds
+				mov		TL0,#LOW  ((LSC_XTAL/1000)*10)	;10 miliseconds
+				setb	TR0
+				jnb		TF0,$
+				djnz	ACC,$$loop
+$$exit:			ret
+			ENDIF
+
+$$restore:
+
+;init timer
+;----------
+			mov		TMOD,#11h		;init Timer	1 in 16-bit	mode
+			clr		A
+			mov		TCON,A
+			mov		TH1,A
+			mov		TL1,A
+
+;wait for serial input
+;---------------------
+			setb	RXD				;enable	RXD	as input
+			jb		RXD,$			;Wait for start bit
+
+			nop						;delay to trigger with other samples	
+			nop
+			nop
+			nop
+			nop
+
+;take sample 1 [R0-R1]
+;---------------------
+			mov		TH1,#0
+			mov		TL1,#14
+			setb	TR1
+$$s1		jb		TF1,$$restore	;restart on	timer overflow.
+			jnb		RXD,$$s1		;wait for rising edge
+			clr		TR1
+			mov		R0,TH1
+			mov		R1,TL1
+
+;take sample 2 [R2-R3]
+;---------------------
+			mov		TH1,#0
+			mov		TL1,#14
+			setb	TR1
+$$s2		jb		TF1,$$restore	;restart on	timer overflow.
+			jb		RXD,$$s2		;wait for falling edge
+			clr		TR1
+			mov		R2,TH1
+			mov		R3,TL1
+
+;take sample 3 [R4-R5]
+;---------------------
+			mov		TH1,#0
+			mov		TL1,#14
+$$s3		setb	TR1
+			jb		TF1,$$restore	;restart on	timer overflow.
+			jnb		RXD,$$s3		;wait for rising edge
+			clr		TR1
+			mov		R4,TH1
+			mov		R5,TL1
+
+;sum samples [R6-R7]
+;-------------------
+			mov		R6,TH1			;sum = sample 3
+			mov		R7,TL1
+
+			mov		A,R7			;sum += sample 2
+			add		A,R3
+			mov		R7,A
+			mov		A,R6
+			addc	A,R2
+			mov		R6,A
+
+			mov		A,R7			;sum += sample 1
+			add		A,R1
+			mov		R7,A
+			mov		A,R6
+			addc	A,R0
+			mov		R6,A
+
+;filter	smallest sampletime
+;--------------------------
+;place smallest number in [R0-R1]
+
+$$cpb1:		mov     A,R0			;if sample3 < sample1 then sample1 = sample3
+			cjne    A,AR4,$$_b1
+			mov     A,R1
+			cjne    A,AR5,$$_b1
+			sjmp    $$f1
+$$_b1:		jc      $$cpb2
+$$f1:		mov		R0,AR4
+			mov		R1,AR5
+
+$$cpb2:		mov     A,R0			;if sample2 < sample1 then sample1 = sample2
+		    cjne    A,AR2,$$_b2
+	        mov     A,R1
+		    cjne    A,AR3,$$_b2
+			sjmp    $$f2
+$$_b2:		jc      $$calcbaud
+$$f2:		mov		R0,AR2
+			mov		R1,AR3
+
+
+
+
+;calculate baudrate
+;------------------
+$$calcbaud:							;<<< BITPOSITIONS >>>
+			mov		A,R1			;FEDC BA98	7654 3210
+			anl		A,#0F0h			;FEDC BA98	7654 ----
+			mov		R1,#0
+			xchd	A,@R1			;FEDC ----	7654 BA98
+			swap	A				;FEDC ----	BA98 7654
+			mov		R5,A			;save  bits BA98 7654 for OpenLSC()
+
+;calculate transmittime of one char
+;----------------------------------
+			clr		C
+			rrc		A				;FEDC ----	-BA9 8765 c=4
+			xch		A,WR0H			;-BA9 8765	FEDC ----
+			swap	A				;-BA9 8765	---- FEDC
+			rrc		A				;-BA9 8765 c4--- -FED
+			anl		A,#11111000b	;-BA9 8765	4--- ----
+			mov		WR0L,A			;WR0=8 bittimes
+
+;delay 8 bittimes-samples
+;------------------------
+			mov     A,R7
+			clr     C
+			subb    A,R1
+			mov     R7,A
+			mov     A,R6
+			subb    A,R0
+			mov     R6,A
+
+			mov		TH1,R6
+			mov		TL1,R7
+
+			mov		A,T1H
+			jnb		ACC.7,$$reopen
+
+			mov		TCON,#40h		;start timer 1
+			jnb		TF1,$			;wait for timer	overflow
+			mov		TCON,#00h		;stop timer	1
+			jnb		RXD,$-2			;wait for rising edge
+
+;open serial port
+;----------------
+
+$$reopen:	mov		A,R5
+			popm	IE				;disable interrupts
+			popm	DPL,DPH,AR7,AR6,AR5,AR4,AR3,AR2,AR1,AR0
+			cpl		A
+			inc		A
+			jmp		baudchk
+
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	lsc_close
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;-------------------------------------------------------------------------
+			pushm	DPH,DPL,ACC
+
+			clr		ES					;disable S-INT
+			clr		LSC_OPEN			;clear device open indicator
+
+			mov		DPH,LSC_rbuf		;free read buffer
+			call	mem_free
+
+			mov		DPH,LSC_wbuf		;free write buffer
+			call	mem_free
+
+			clr		C
+			popm	ACC,DPL,DPH
+			ret
+			ENDP
+;-------------------------------------------------------------------------
+
+
+;-------------------------------------------------------------------------
+			PROC	lsc_ioctl
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;GSC i/o device driver routines
+;
+;COMMANDS: (ACC)
+;
+;v  CMD_RESET	initialize LSC hardware
+;v	CMD_STOP	disable lsc reception
+;-------------------------------------------------------------------------
+			cje		A,#CMD_RESET,io_reset
+			cje		A,#CMD_START,io_start
+			cje		A,#CMD_STOP,io_stop
+			setb	C
+			ret
+
+;----------------------------
+;setup LSC hardware
+;----------------------------
+io_reset:
+io_start:
+
+;disable interrupts
+			clr	 ES
+
+;init read buffers
+			mov		A,SBUF				;clear SBUF
+			clr		RI
+			mov		A,LSC_rbuf			;init rbuffer
+			mov		LSC_rout+H,A
+			mov		LSC_rout+L,#0
+			mov		LSC_rin+H,A
+			mov		LSC_rin+L,#0
+			mov		LSC_ralloc+H,#0
+			mov		LSC_ralloc+L,#0
+
+
+;init write buffers
+			clr		TI
+			mov		A,LSC_wbuf			;init wbuffer
+			mov		LSC_win+H,A
+			mov		LSC_win+L,#0
+			mov		LSC_wout+H,A
+			mov		LSC_wout+L,#0
+			mov		LSC_walloc+H,#0
+			mov		LSC_walloc+L,#0
+			setb	LSC_WDONE
+
+;enable interrupts
+			setb	ES					;enable S-INT
+			clr		C
+			ret
+
+io_stop:
+;----------------------------
+;pause current activity on lsc
+;----------------------------
+			clr		ES
+			mov		A,SBUF				;clear SBUF
+			clr		RI
+			clr		TI
+			setb	LSC_WDONE
+			ret
+
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	lsc_read
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;read input from serial port
+;-------------------------------------------------------------------------
+			pushm   DPH,DPL
+
+			mov		A,LSC_ralloc+H				;check buffer for chars
+			orl		A,LSC_ralloc+L
+			jz		err
+
+			mov		DPH,LSC_rout+H
+			mov		DPL,LSC_rout+L
+			movx	A,@DPTR
+			push	ACC
+
+
+			inc		DPTR
+			mov		A,LSC_rbuf+H			  ;check wbuf for wrap needs
+			add		A,#LSC_RBUFSIZE
+			cjne	A,DPH,$$a
+
+			mov		DPH,LSC_rbuf
+$$a			mov		LSC_rout+H,DPH
+			mov		LSC_rout+L,DPL
+
+			clr		ES
+			mov		A,LSC_ralloc+L
+			jnz		$$b
+			dec		LSC_ralloc+H
+$$b			dec		LSC_ralloc+L
+			setb	ES
+			pop		ACC
+
+done		clr		C
+			popm	DPL,DPH
+			ret
+
+err			setb	C
+			setb	P4.1
+			popm	DPL,DPH
+			ret
+
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	lsc_write
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;write one char to tx buffer
+;IN:		ACC	 char to write to LSC
+;-------------------------------------------------------------------------
+			pushm	DPH,DPL,ACC,AR0
+
+			mov		R0,A				;check for buffer full
+			mov		A,LSC_wbuf
+			add		A,#LSC_WBUFSIZE
+			cje		A,#LSC_walloc+H,$$err
+		
+			mov		DPH,LSC_win+H		;write char to buffer
+			mov		DPL,LSC_win+L
+			mov		A,R0
+			movx	@DPTR,A
+			inc		DPTR
+			clr		ES					;!!! S-INT DISABLED !!!
+			mov		LSC_win+H,DPH
+			mov		LSC_win+L,DPL
+			mov		A,LSC_wbuf			;wrap LSC_win if needed
+			add		A,#LSC_WBUFSIZE
+			cjne	A,LSC_win+H,$$alloc
+			mov		LSC_win+H,LSC_wbuf
+
+$$alloc:	mov		A,LSC_walloc+L
+			jnz		$$a
+			dec		LSC_walloc+H
+$$a:		dec		LSC_walloc+L
+
+			jnb		LSC_WDONE,$$done	;kick interrupt if sleeping
+			clr		LSC_WDONE
+			setb	TI
+
+$$done:		setb	ES
+			popm	AR0,ACC,DPL,DPH
+			clr		C
+			ret
+
+$$err:		setb	ES
+
+			popm	AR0,ACC,DPL,DPH
+			setb	C
+			ret
+
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	lsc_sint
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;LSC interrupt service routine writes bytes from buffer to LSC
+;-------------------------------------------------------------------------
+			pushm	PSW,DPH,DPL,ACC
+
+;LSC receive handler
+;-------------------
+in_char:	jnb		RI,out_char			;read char from lsc?
+			clr		P4.1
+
+			mov		A,LSC_ralloc+H				;if receive buffer full
+			cjne	A,#LSC_RBUFSIZE,$$readchar
+			clr		RI							;then don't read char
+			jmp		out_char
+
+$$readchar	mov		A,SBUF						;read char from SBUF
+			clr     RI
+			mov		DPH,LSC_rin+H				;and write in receive buffer
+			mov		DPL,LSC_rin+L
+			movx	@DPTR,A
+			inc		DPTR
+
+			mov		A,LSC_rbuf					;wrap around buffer if necessary
+			add		A,#LSC_RBUFSIZE
+			cjne	A,DPH,$$a
+			mov		DPH,LSC_rbuf
+$$a			mov		LSC_rin+H,DPH
+			mov		LSC_rin+L,DPL
+
+$$regchar	mov		A,LSC_ralloc+L				;increase allocation pointer
+			cjne	A,#0FFh,$$b
+			inc		LSC_ralloc+H
+$$b:		inc		LSC_ralloc+L
+
+
+;LSC transmit handler
+;--------------------
+out_char:	jnb		TI,done				;write char to lsc?
+			clr		TI
+
+			mov		A,LSC_wout+L		;check buffer for chars
+			cjne	A,LSC_win+L,$$send
+			mov		A,LSC_wout+H
+			cjne	A,LSC_win+H,$$send
+			setb	LSC_WDONE
+			jmp		done
+
+$$send:		mov		DPH,LSC_wout+H			  ;found !!! now send one
+			mov		DPL,LSC_wout+L
+			movx	A,@DPTR
+			mov		SBUF,A
+			clr		TI
+			inc		DPTR
+			mov		LSC_wout+H,DPH
+			mov		LSC_wout+L,DPL
+
+			mov		A,LSC_wbuf				  ;check wbuf for wrap needs
+			add		A,#LSC_WBUFSIZE
+			cjne	A,LSC_wout+H,$$a
+			mov		LSC_wout+H,LSC_wbuf
+
+$$a:		clr		LSC_WDONE
+			mov		A,LSC_walloc+L
+			jnz		$$b
+			dec		LSC_walloc+H
+$$b:		dec		LSC_walloc+L
+
+done:		popm	ACC,DPL,DPH,PSW
+			reti
+			ENDP
+
+	ENDIF

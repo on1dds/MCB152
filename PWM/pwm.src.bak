@@ -1,0 +1,130 @@
+;how it works:
+;-------------
+;IVAL*RES times per second, pwm_int is called by T0 int.
+;every T0 int, pwm_counter is incremented.
+;when pwm_counter reaches pwm_top, it is reset to zero.
+;if pwm_px < pwm_counter then the corresponding line is low
+;if pwm_px > pwm_counter then the corresponding line is high
+;changing the pwm_px value in application level
+;causes the corresponding line to adjust its intensity.
+;the number of steps from 0 to 100% intensity is defined by RES.
+;higher IVAL or RES values require more processor time.
+
+;the number of PWM channels can easily be extended.
+
+;these are the limits for a 11059200 Hz clock
+;RES*IVAL > (XTAL/12/65536)   or 15
+;RES*IVAL <	i(XTAL/12)/(1+i)  or 917014 
+
+;RES*IVAL < (XTAL/12)/(1+i) or 
+
+;with i=the number of instructioncycles the T0 int takes
+;i took i=200 for the calculations above.
+
+			CPU     8051
+
+			INCLUDE	"as.inc"				;extend	pseudo instructions
+			INCLUDE	"80c152.inc"			;assign	8052 register names
+
+;adjustable parameters
+XTAL		EQU		14745600 				;XTAL frequency
+RES			EQU		40						;PWM resolution (steps)
+IVAL		EQU		100						;intervals per second
+
+;fixed, internal constant
+TVAL		EQU		-(XTAL/12)/(RES*IVAL)	;internal timer value
+
+setline		MACRO	reg,line
+			cjne	A,reg,$+7
+			clr		line
+			sjmp	$+6
+			jc		$-4
+			setb	line
+			ENDM
+
+            SEGMENT DATA
+pwm_counter	db		?
+pwm_top		db		?
+pwm_tvalh	db		?
+pwm_tvall	db		?
+
+pwm_p1		db		?
+pwm_p2		db		?
+pwm_p3		db		?
+pwm_p4		db		?
+pwm_p5		db		?
+pwm_p6		db		?
+
+            SEGMENT CODE
+
+			ORG		0000h
+			jmp		start
+
+			ORG		000Bh
+			jmp		pwm_int
+
+			ORG		0100h
+start:		mov		R0,#HIGH(TVAL)
+			mov		R1,#LOW(TVAL)
+			mov		A,#RES
+			call	pwm_init
+
+			mov		pwm_p1,#0
+			mov		pwm_p2,#4
+			mov		pwm_p3,#8
+			mov		pwm_p4,#12
+			mov		pwm_p5,#16 
+			mov		pwm_p6,#20
+
+			jmp		$							;
+
+
+pwm_init:
+;====================================================
+;INPUT:	R0	Timer high value
+;		R1	Timer low value
+;		ACC	counter boundary
+;====================================================
+			mov		pwm_top,A
+			mov		pwm_tvalh,R0
+			mov		pwm_tvall,R1
+			mov		pwm_counter,#0
+			anl		TCON,#11001100b			;stop timer 0
+			anl		TMOD,#11110000b			;set timer mode
+			orl		TMOD,#00000001b
+			mov		TH0,pwm_tvalh
+			mov		TL0,pwm_tvall
+			setb	TR0
+			setb	ET0
+			setb	EA
+			ret
+
+pwm_hold:	clr		ET0
+			mov		P4 ,#0FFh
+			ret
+
+pwm_int:	push	PSW
+			push	ACC
+			clr		TR0
+			anl		TMOD,#11110000b
+			orl		TMOD,#00000001b
+			mov		TH0,pwm_tvalh
+			mov		TL0,pwm_tvall
+			setb	TR0
+
+			mov		A,pwm_counter
+			setline	pwm_p1,P4.0				;change these to any other port
+			setline	pwm_p2,P4.1				;if you need and append
+			setline	pwm_p3,P4.2				;additional pwm lines below
+			setline	pwm_p4,P4.3
+			setline	pwm_p5,P4.4
+			setline	pwm_p6,P4.5
+
+			cjne	A,pwm_top,pwm_cnt
+			clr		A
+pwm_cnt:	inc		A
+			mov		pwm_counter,A
+
+			pop		ACC
+			pop		PSW
+			reti

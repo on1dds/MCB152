@@ -1,0 +1,112 @@
+;**
+;**     $Filename: sreg.inc
+;**     $Release: 0
+;**     $Revision: 1
+;**     $Date: 20/01/2001
+;**     $Coding: Joachim Elen
+;**     
+;**
+;**     modem S register defaults
+;**
+
+			db	0			;S0  = ring to answer				(-)
+			db	0			;S1  = ringcount					(-)
+			db	'+'			;S2  = escape						(ASCII) NYI
+			db	13			;S3  = carriage return				(ASCII)	>127=disable
+			db	10			;S4	 = line feed					(ASCII) >127=disable	
+			db	8			;S5	 = backspace					(ASCII) >31=disable
+			db	2			;S6  = wait for dial tone			(-)
+			db	30			;S7	 = wait for carrier				(-)
+			db	2			;S8	 = comma pause time				(-)
+			db	1			;S9	 = carrier response				(-)
+			db	7			;S10 = carrier loss delay			(-)
+			db	70			;S11 = tone duration				(-)
+			db	50			;S12 = escape guard time			(-)
+			db	0			;S13 = bit mapped UART status		(-)
+			db	000001010b	;S14 = bit mapped option register
+							; BIT								OFF	ON
+							; B0 RESERVED
+							; B1 echo							0	1*
+							; B2 quiet mode						0*	1
+							; B3 verbose						0	1*
+							; B4 RESEVED
+							; B5 tone/pulse						0*	1
+							; B6 RESEVED
+							; B7 originate/answer				0*	1	
+			db	000000011b	;S15 = bit mapped register
+							; BIT
+							; B0 full duplex mode				0*	1
+							; B1 force PTT in full duplex mode	0*	1
+							; B2 RESERVED
+							; B3 RESERVED
+							; B4 RESERVED
+							; B5 RESERVED
+							; B6 RESERVED
+							; B7 RESERVED
+			db	0 ;5			;S16 = test mode register
+			db	0			;S17 = RESERVED
+			db	0			;S18 = online time to auto exit (seconds)
+			db	0			;S19 = RESERVED
+			db	0			;S20 = RESERVED
+			db	0			;S21 = bit mapped					(not used)
+			db	0			;S22 = bit mapped speaker options	(not used)
+			db	0			;S23 = bit mapped					(not used)
+			db	0			;S24 = RESERVED
+			db	5			;S25 = delay to DTR					(not used)
+			db	1			;S26 = RTS to CTS delay				(not used)
+			db	0			;S27 =
+			db	0			;S28 =
+			db	0			;S29 =
+			db	0			;S30 = inactivity before hang-up	(10 seconds)o
+			db	LSC_SPEED	;S31 = initial local serial baudrate
+			db	17			;S32 = XON							(not used)
+			db	19			;S33 = XOFF							(not used)
+			db	0			;S34 =
+			db	0			;S35 =
+			db	0			;S36 =
+			db	0			;S37 =
+			db	20			;S38 = delay to forced disconnect	(not used)
+			db	0			;S39 = flow control					(not used)
+								; VALUE							OFF	ON
+								; 0 = no flow control
+								; 3 = RTS/CTS (&K3)
+								; 4 = XON/XOFF
+								; 5 = transparent XON (&K5)
+								; 6 = both methods (&K6)
+			db	LO(-XTAL/100)	;S40 = timeunit low byte			(cycles/unit)
+			db	HI(-XTAL/100)	;S41 = timeunit high byte
+			db	LO(100)			;S42 = second low byte				(units/sec)
+			db	HI(100)			;S43 = second high byte
+			db	0				;S44 = time (seconds)
+			db	0				;S45 = time (minutes)
+			db	0				;S46 = time (hours)
+			db	0				;S47 = date (month)
+			db	0				;S48 = date (year)
+			db	3				;S49 = max framesize				(256 byte blocks)
+
+			db	"MCB152",    0,0,0,0		;S50-S59			(source callsign)
+			db	"QST",0,0, 0,0,0,0,0		;S60-S69			(dest callsign)
+			db	0,0,0,0,0, 0,0,0,0,0		;S70-S79			(digi 1)
+			db	0,0,0,0,0, 0,0,0,0,0		;S80-S89			(digi 2)
+			db	0,0,0,0,0, 0,0,0,0,0		;S90-S99			(digi 3)
+
+			db	30			;S100 = repeater hang		AXHANG	(1 sec)
+			db	5			;S101 = priority window		PRIACK	(units)
+			db	3			;S102 = slottime			SLOTTM	(units)
+			db	5			;S103 = transmit startup	TXDELAY	(units)
+			db	2			;S104 = repeater startup	AXDELAY	(units)
+			db	2			;S105 = remote receive sync			(units)
+			db	5			;S106 = ten minute transition limit	(10 sec)
+			db	10			;S107 = anti-hogging limit			(1 sec)
+			db	0			;S108 = receiver startup	TXTAIL	(units)
+
+			db	000,000,000,000,000,000,000,000,000,000,000	;S110-S119
+
+			db	63			;S120 = p - persistence				(threshold)
+			db	0			;S121 = 
+			db	0			;S122 = 
+			db	0			;S123 = 
+			db	0			;S124 = 
+			db	0			;S125 = 
+			db	0			;S126 = 
+			db	0			;S127 = 

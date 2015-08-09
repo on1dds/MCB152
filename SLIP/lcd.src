@@ -1,0 +1,368 @@
+	IFNDEF  LCD_SRC
+LCD_SRC	 EQU TRUE
+;**
+;**     $Filename: lcd.src
+;**     $Release: 0
+;**     $Revision: 1
+;**     $Date: 10/12/2000
+;**     $Coding: Joachim Elen
+;**  
+;**
+;**     HD44780U LCD Device driver
+;**
+;**     device on port P6, driven in 4 bit mode
+;**     ---------------------------------------
+;**     bit :   7   6   5   4   3   2   1   0
+;**     pin :   E   RS  RW  -   DB7 DB6 DB5 DB4
+;**     ---------------------------------------
+;**
+;**     BEWARE: the display is only updated when
+;**         - lcd_ioctl/CMD_RESET is called
+;**         - lcd_ioctl/CMD_FLUSH is called
+;**
+
+LCD_R0		EQU		00			;offset	row	1
+LCD_R1		EQU		40			;offset	row	2
+LCD_R2		EQU		20			;offset	row	3
+LCD_R3		EQU		60			;offset	row	4
+LCD_BUFSIZE	EQU		80			;size of display
+
+
+			CPU		8051
+
+			LISTING OFF
+			INCLUDE "as.inc"
+			INCLUDE "80c152.inc"
+			INCLUDE "mcb152.inc"
+			INCLUDE "hardware.inc"
+			INCLUDE "macros.inc"
+			INCLUDE "malloc.src"
+			INCLUDE "include\device.inc"
+			LISTING ON
+
+			SEGMENT DATA
+;buffers
+LCD_buf			db  ?					;LCD display buffer
+LCD_cpos		db	?					;cursor position
+
+			SEGMENT BITDATA
+LCD_OPEN		db  ?					;set if device is open
+
+
+			SEGMENT CODE
+
+
+;-------------------------------------------------------------------------
+			PROC	lcd_open
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;This open routine grants access to the LCD device
+;-------------------------------------------------------------------------
+			push	ACC
+			jb		LCD_OPEN,$$exit
+
+;allocate memory
+			mov		A,#1				;alloc display buffer (256 bytes)
+			call	mem_alloc
+			jc		$$exit
+			mov		LCD_buf,DPH
+
+;setup display
+			setb	LCD_OPEN			;set device open indicator
+
+			mov		A,#CMD_RESET		;setup device hardware
+			call	lcd_ioctl
+			jnc		$$exit
+
+$$free:		mov		DPH,LCD_buf
+			call	mem_free
+			setb	C
+
+$$exit:		pop		ACC
+			clr		C
+			ret
+
+			ENDP
+
+
+
+
+;-------------------------------------------------------------------------
+			PROC	lcd_close
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;This call terminates the use of the LCD device
+;-------------------------------------------------------------------------
+			pushm	DPH,DPL,ACC
+			clr		LCD_OPEN			;clear device open indicator
+
+			mov		DPH,LCD_buf			;free display buffer
+			call	mem_free
+			
+			clr		C
+			popm	ACC,DPL,DPH
+			ret
+			ENDP
+
+
+
+;-------------------------------------------------------------------------
+			PROC	lcd_write
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;write char to LCD buffer
+;-------------------------------------------------------------------------
+            pushm	DPH,DPL
+
+            mov     DPH,LCD_buf
+            mov     DPL,LCD_cpos
+            movx    @DPTR,A
+            inc     LCD_cpos
+
+            popm	DPL,DPH
+			clr		C
+            ret
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	lcd_ioctl
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;control device specific things
+;
+;COMMANDS: (ACC)
+;
+;v  CMD_RESET	initialize LCD hardware
+;v  CMD_RX		start receive mode
+;v  CMD_TX		start transmit mode (if possible)
+;-------------------------------------------------------------------------
+			cje		A,#CMD_RESET,lcd_reset
+			cje		A,#CMD_CLEAR,lcd_clear
+			cje		A,#CMD_FLUSH,lcd_flush
+
+			setb	C
+			ret
+
+lcd_clear:
+;----------------------------
+;clear lcd display
+;----------------------------
+            pushm   DPH,DPL,ACC
+
+            mov     DPH,LCD_buf
+			mov		DPL,#0
+
+$$loop:		mov     A,#' '
+            movx    @DPTR,A
+            inc     DPL
+            mov     A,#LCD_BUFSIZE
+            cjne    A,DPL,$$loop
+            
+			popm	ACC,DPL,DPH
+			clr		C
+            ret
+
+			
+lcd_flush:
+;----------------------------
+;flush data to display
+;----------------------------
+            pushm   DPH,DPL,ACC,AR0
+
+			mov		DPH,LCD_buf
+			mov		DPL,#LCD_R0
+
+			mov     A,#00000010b
+            call    _lcd_command
+
+			mov     R0,#LCD_BUFSIZE
+$$loop:		clr     A
+            movx    A,@DPTR
+            inc     DPTR
+            clr     ACC.7
+
+            call    _lcd_putchar
+            djnz    R0,$$loop
+
+			popm	AR0,ACC,DPL,DPH
+			clr		C
+			ret
+		
+
+lcd_reset:
+;----------------------------
+;hardware init and clear lcd
+;----------------------------
+            push    AR0
+
+;set interface to 8 bits long
+            mov     R0,#3
+$$loop		mov		A,#00000011b
+			call	_lcd_putraw
+            mov     A,#5
+            call    Delay
+            djnz    R0,$$loop
+
+;set interface is 4 bits long
+			mov		A,#00000010b
+			call	_lcd_putraw
+
+            mov     A,#00100000b        ;set
+            call    _lcd_command
+            mov     A,#00000001b        ;clear display
+            call    _lcd_command
+            mov     A,#00000110b        ;entry mode = inc, no shift
+            call    _lcd_command
+            mov     A,#00001100b        ;display on
+            call    _lcd_command
+
+            mov     A,#2
+            call    Delay
+
+			call	lcd_clear
+			call	lcd_flush
+
+			mov		LCD_cpos,#LCD_R0
+			
+			pop     AR0
+			clr		C
+            ret
+
+			ENDP
+
+
+_lcd_command:
+;----------------------------
+;give command to lcd display
+;----------------------------
+			push	ACC
+			swap	A
+			anl		A,#00001111b
+			acall	_lcd_putraw
+			pop		ACC
+			anl		A,#00001111b
+			acall	_lcd_putraw
+			acall	_lcd_wait
+			ret
+
+
+_lcd_putchar:
+;----------------------------
+;write char	to lcd data	ram
+;----------------------------
+			push	ACC
+			swap	A
+			anl		A,#00001111b
+			orl		A,#01000000b
+			acall	_lcd_putraw
+			pop		ACC
+			anl		A,#00001111b
+			orl		A,#01000000b
+			acall	_lcd_putraw
+			acall	_lcd_wait
+			ret
+
+
+_lcd_wait:
+;==========================================================
+;wait until	display	is ready
+;==========================================================
+			push	ACC
+			mov		P6,#10101111b			;set E,	enable BF detection
+$$bw:		mov		A,P6
+			jb		ACC.3,$$bw				;wait while	BF is set
+			mov		P6,#00100000b			;clear E
+			pop		ACC
+			ret
+
+
+_lcd_putraw:
+;==========================================================
+;write data	to display,	toggling E on and off
+;==========================================================
+			;call	 _lcd_wait
+			orl		A,#10000000b
+			mov		P6,A
+			anl		A,#01111111b
+			mov		P6,A
+			ret
+
+
+
+;-------------------------------------------------------------------------
+			PROC	lcd_getpos
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;get cursorposition
+;-------------------------------------------------------------------------
+			mov		A,LCD_cpos
+			clr		C
+			ret
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	lcd_setpos
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;set cursorposition
+;-------------------------------------------------------------------------
+			mov		LCD_cpos,A
+			clr		C
+			ret
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	lcd_printc
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;print a string	from CODE memory
+;-------------------------------------------------------------------------
+
+$$copy:		clr		A
+			movc	A,@A+DPTR
+			jz		$$done
+			call	lcd_write
+			inc		DPTR
+			jmp		$$copy
+
+$$done:		clr		C
+			ret
+			ENDP
+
+
+;-------------------------------------------------------------------------
+			PROC	lcd_puthex16
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;write 16 bit number from WACC into xdata RAM from DPTR
+;-------------------------------------------------------------------------
+			push    ACC
+            mov     A,B
+            call    lcd_puthex8
+            pop     ACC
+            call    lcd_puthex8
+			ret
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	lcd_puthex8
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;write 8 bit number from ACC into xdata RAM from DPTR
+;-------------------------------------------------------------------------
+show8:      push    ACC
+            swap    A
+            call    Hex2ASCII
+            call    lcd_write
+            pop     ACC
+            call    Hex2ASCII
+            call    lcd_write
+            ret
+			ENDP
+
+;-------------------------------------------------------------------------
+			PROC	lcd_puthex4
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;write 8 bit number from ACC into xdata RAM from DPTR
+;-------------------------------------------------------------------------
+			call    Hex2ASCII
+            call    lcd_write
+            ret
+			ENDP
+
+
+	ENDIF
+

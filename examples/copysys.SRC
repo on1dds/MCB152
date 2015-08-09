@@ -1,0 +1,41 @@
+;==========================================================
+;PROJECT: CopySYS
+;DATE   : 10 januari 1998
+;==========================================================
+;CopySYS makes a copy of the 8Kb EPROM to code memory.
+;After finishing the program, it returns to the command so
+;debugging the EPROM code becomes possible.
+;----------------------------------------------------------
+
+        $NOPAGING
+        $MOD152
+        $INCLUDE(X:mcb152.inc)
+
+        CSEG
+
+        SETCODE Start,04000h
+        SETINT  RESET,Start
+
+        ORG     Start
+
+        mov     DPTR,#txt_copysys
+        call    PutMessage
+
+        mov     DPTR,#0
+copysys:
+        call    ReadKick
+        call    WriteCRAM
+        inc     DPTR
+        mov     A,#20h
+        cjne    A,DPH,copysys
+
+        mov     DPTR,#txt_copydone
+        call    PutMessage
+        call    Newline
+        ret
+
+
+txt_copysys:    db 'Copying EPROM to CODE memory...',0
+txt_copydone:   db 'done',0
+
+        END

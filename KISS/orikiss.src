@@ -1,0 +1,182 @@
+;==========================================================
+;PROJECT: MCB152 KISS-TNC
+;VERSION: v1.0d
+;DATE   : 21 march 1998
+;
+;COMMENT: Firmware for standard KISS-TNC.
+;
+;HARDWARE EXTENSION:
+;DK9RR,half-duplex FSK/AFSK modem with internal clocking
+;==========================================================
+        $NOPAGING
+        $MOD152
+
+        $NOLIST
+        $INCLUDE(..\include\macros.inc)
+        $INCLUDE(..\include\hardware.inc)
+        $INCLUDE(..\include\library.inc)
+        $INCLUDE(..\include\ascii.inc)
+        $INCLUDE(..\include\init.inc)
+        $LIST
+
+        
+
+        $INCLUDE(include\kiss.inc)
+
+;----------------------------------------------------------
+;
+;    Constant Definitions
+;
+;----------------------------------------------------------
+GSC_SPEED       EQU     GSC_XCLK        ;T/RX speed (external clocking)
+MAXFRAMESIZE    EQU     3 SHL(8)        ;maximum framelength (per 256 bytes)
+TXBUFSIZE       EQU     10*1024
+RXBUFSIZE       EQU     5*1024
+
+
+;----------------------------------------------------------
+;
+;    Vector Table Initialisation
+;
+;----------------------------------------------------------
+        CSEG
+
+;------ Bootvector
+
+        SETCODE TNC_Start,00100h
+        SETINT  RESET,TNC_Start         ;coldreboot handler
+
+;------ Interrupt vectors
+
+        ;SETINT  SINT,GetLSC             ;TX-SLIP handler
+        ;SETINT  GSCRV,GetGSC_Valid      ;RX valid handler
+        ;SETINT  GSCRE,GetGSC_Error      ;RX error handler
+        ;SETINT  GSCTV,PutGSC_Valid      ;TX valid handler
+        ;SETINT  GSCTE,PutGSC_Error      ;TX error handler
+        ;SETINT  DMA1, GetGSC_Reject     ;RX framesize overflow
+
+
+        ORG     TNC_Start
+;==========================================================
+;[AL]:Bootcode
+;==========================================================
+;
+;----------------------------------------------------------
+
+        mov     P4,#11000000b
+
+;disable interrupts
+;------------------
+        clr     A               ;disable all interrupt resources
+        mov     IE,A
+        mov     IEN1,A
+
+;init stack pointer
+;------------------
+        mov     SP,#128         ;init stack-base
+        pushret RESET
+
+;init data-memory
+;----------------
+        clr     A
+        call    ClearXRam
+
+        mov     P4,#11001111b
+
+;init IO/Devices
+;---------------
+        ;call    InitLSC
+        ;call    InitGSC
+
+        mov     P4,#11111111b
+
+;init status flags
+;-----------------
+        clr     DB_WARMREBOOT
+        clr     DB_COLDREBOOT
+
+;init interrupts
+;---------------
+        clr     A               ;disable all interrupt resources
+        mov     IE,A
+        mov     IEN1,A
+
+        setb    ES              ;enable serial interrupt
+        setb    EGSRV           ;enable GetGSC_Valid
+        setb    EGSRE           ;enable GetGSC_Error for invalid framedata
+        setb    EDMA1           ;enable GetGSC_Error for frame too long
+
+        setb    EGSTV           ;enable PutGSC_Valid
+        setb    EGSTE           ;enable PutGSC_Error for invalid framedata
+        setb    EA              ;enable all interrupts
+
+        setb    PGSRV           ;enable GetGSC_Valid
+        setb    PGSRE           ;enable GetGSC_Error for invalid framedata
+        setb    PDMA1           ;enable GetGSC_Error for frame too long
+
+
+KISSMain:
+;----------------------------------------------------------
+;Writing data from buffers are low-priority activities
+;and thus are polled here for action in application level.
+;Additional functionalities, impossible to handle from
+;inside the interrupts  are inserted here as well.
+;By responding to certain flags, set inside the interrupts,
+;these extra subcalls can be executed.
+;----------------------------------------------------------
+        ;call    PutGSC
+        ;call    PutLSC
+        call    Additives
+
+        pbmov   LED_GETGSC,DCD
+
+        mov     A,rx_allocatedH
+;        cjae    A,#HIGH(RXBUFSIZE-MAXFRAMESIZE),KM_rxfull
+
+KM_rxok:
+        pbclr   LED_RXFULL
+        sjmp    KISSMain
+
+KM_rxfull:
+        pbset   LED_RXFULL
+        sjmp    KISSMain
+
+
+
+Additives:
+;==========================================================
+;[AL] Addititional routines
+;==========================================================
+;Some routines, that don't fit in LSC nor GSC handlers.
+;These routines don't have a main purpose, but characterise
+;the TNC 
+;----------------------------------------------------------
+        jb      DB_WARMREBOOT,ADD_WarmReboot
+        jb      DB_COLDREBOOT,ADD_ColdReboot
+        ret
+
+ADD_ColdReboot:
+;==========================================================
+;if the DB_COLDREBOOT flag is set, the TNC will
+;reboot to upload-routine.
+;==========================================================
+        clr     EA
+        jmp     ColdReboot
+
+ADD_WarmReboot:
+;==========================================================
+;if the DB_WARMREBOOT flag is set, the TNC will
+;reboot the KISS-TNC.
+;==========================================================
+        clr     EA
+        jmp     RESET
+
+;==========================================================
+;source extensions
+;==========================================================
+        ;$INCLUDE(lsc.src)               ;local I/O 
+        ;$INCLUDE(gsc.src)               ;global I/O
+        ;$INCLUDE(data\persist.dat)      ;persistance data
+
+        END
+

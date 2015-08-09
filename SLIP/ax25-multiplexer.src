@@ -1,0 +1,113 @@
+	IFNDEF  AX25_MULTIPLEXER_SRC
+AX25_MULTIPLEXER_SRC     EQU TRUE
+;**
+;**     $Filename: gsc.src
+;**     $Release: 0
+;**     $Revision: 1
+;**     $Date: 12/11/2000
+;**     $Coding: Joachim Elen
+;**     
+;**
+;**     Global Serial Channel Device driver
+;**
+
+            CPU     8051
+
+			LISTING	OFF
+			INCLUDE	"as.inc"			;extend	pseudo instructions
+			INCLUDE	"80c152.inc"		;assign	8052 register names
+			INCLUDE	"hardware.inc"		;assign	80152 specific names
+			INCLUDE	"ascii.inc"			;assign	ASCII character	names
+			INCLUDE	"macros.inc"		;macro definitions
+			INCLUDE	"malloc.src"
+			INCLUDE	"ipc.src"
+			INCLUDE "timer.src"
+			INCLUDE	"include\device.inc"	;device	specific definitions
+			INCLUDE	"include\message.inc"
+			LISTING	ON
+
+
+
+;States
+LM_IDLE						EQU		0
+LM_SEIZE_PENDING			EQU		1
+LM_SEIZED					EQU		2
+
+            SEGMENT DATA
+
+
+            SEGMENT BITDATA
+
+
+
+
+
+
+            SEGMENT CODE
+;-------------------------------------------------------------------------
+            PROC    gsc_open
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;open the GSC device in SIMPLEX mode and enter receive mode
+;-------------------------------------------------------------------------
+;IN:
+;		-
+;RETURNED:
+;	PSW.C	=		SET on error
+;-------------------------------------------------------------------------
+			jb      GSC_OPEN,$$done			;exit if already open.
+            setb    GSC_OPEN				;set device open indicator
+
+;initialize GSC status machine
+;-----------------------------
+			mov		GSC_status,#PH_READY
+			mov		GSC_status2,#PH_READY
+			clr		GSC_TXBUSY
+			clr		T100_EXPIRY
+			clr		T101_EXPIRY
+			clr		T102_EXPIRY
+			clr		T103_EXPIRY
+			clr		T104_EXPIRY
+			clr		T105_EXPIRY
+
+;startup hardware
+;----------------
+			clr     GSC_RBUF						;initialise hardware
+			call	gsc_reset
+
+			mov		GSC_rcount,#23
+			mov		GSC_tcount,#23
+
+			setb	EGSRV							;enable interrupts
+			setb	EGSRE
+$$done		clr		C
+            ret
+
+			ENDP
+
+;-------------------------------------------------------------------------
+            PROC    gsc_close
+;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+;close the gsc device, removes queues and free internal memory
+;-------------------------------------------------------------------------
+;IN:
+;		-
+;RETURNED:
+;	PSW.C	=		SET on error
+;-------------------------------------------------------------------------
+            jnb     GSC_OPEN,$$err
+            clr		GSC_OPEN
+
+			anl     IEN1,#~(00111011b)  ;disable GSCRx,GSCTx & DMA1 int
+			clr		EGSRV
+			clr		EGSRE
+			clr		EGSTV
+			clr		EGSTE
+            clr     C
+            ret
+
+$$err:      setb    C
+            ret
+            ENDP
+
+    ENDIF   ;AX25_MULTIPLEXER_SRC
+

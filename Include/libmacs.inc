@@ -1,6 +1,5 @@
-        IF (LIBMACS_INC)
-        ELSE
-LIBMACS_INC        SET     1
+        IFNDEF LIBMACS_INC
+LIBMACS_INC        EQU     1
 ;**
 ;**     $Filename: libmacs.inc
 ;**     $Release: 1

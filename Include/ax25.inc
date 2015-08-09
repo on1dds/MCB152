@@ -1,6 +1,5 @@
-        IF (AX25_INC)
-        ELSE
-AX25_INC        SET     1
+        IFNDEF AX25_INC
+AX25_INC        EQU     1
 ;**
 ;**     $Filename: ax25.inc
 ;**     $Release: 1
@@ -18,7 +17,7 @@ AX25_INC        SET     1
 ;
 ;----------------------------------------------------------
 
-JMPFTYP MACRO iframe,sframe,uframe
+jmpftyp MACRO iframe,sframe,uframe
         jnb     ACC.0,$+9       ;jump for Information frame
         jnb     ACC.1,$+9       ;jump for Supervisor frame
         ljmp    uframe          ;jump for Unnumbered frame
@@ -26,12 +25,12 @@ JMPFTYP MACRO iframe,sframe,uframe
         ljmp    sframe
         ENDM
 
-GTXSEQ  MACRO   reg,accu
+gtxseq  MACRO   reg,accu
         anl     accu,#FC_TXSEQ
         rr      accu
         ENDM
 
-GRXSEQ  MACRO   reg,accu
+grxseq  MACRO   reg,accu
         anl     accu,#FC_RXSEQ
         rr      accu
         rr      accu
@@ -40,7 +39,7 @@ GRXSEQ  MACRO   reg,accu
         rr      accu
         ENDM
 
-GSSID   MACRO   accu
+gssid   MACRO   accu
         anl     accu,#FC_SSID
         rr      accu
         ENDM
@@ -113,19 +112,19 @@ UFC_TEST        EQU 11100011b   ;test
 ;       PROTOCOL IDENTIFIER (PID)
 ;
 ;----------------------------------------------------------
-PID_COMPRESSED  EQU 00000110b   ;Compressed TCP/IP (Van Jacobson)
-PID_UNCOMPRESSED EQU 00000111b  ;Uncompressed TCP/IP (Van Jacobson)
-PID_SEGMENT     EQU 00001000b   ;Segmentation Fragment
-PID_TEXNET      EQU 11000011b   ;TEXNET datagram protocol
-PID_LQP         EQU 11000100b   ;Link Quality Protocol
-PID_APPLETALK   EQU 11001010b   ;AppleTalk
-PID_APPLETALK_ARP EQU 11001011b ;AppleTalk ARP
-PID_IP          EQU 11001100b   ;TCP/IP Internet Protocol
-PID_ARP         EQU 11001101b   ;TCP/IP Address Resolution Protocol
-PID_FLEXNET     EQU 11001110b   ;FlexNet
-PID_NETROM      EQU 11001111b   ;NET/ROM
-PID_TEXT        EQU 11110000b   ;No Layer 3 implemented
-PID_ESCAPE      EQU 11111111b   ;Escape character, next octet contains more
+AX25_P_COMPRESSED  EQU 00000110b   ;Compressed TCP/IP (Van Jacobson)
+AX25_P_UNCOMPRESSED EQU 00000111b  ;Uncompressed TCP/IP (Van Jacobson)
+AX25_P_SEGMENT     EQU 00001000b   ;Segmentation Fragment
+AX25_P_TEXNET      EQU 11000011b   ;TEXNET datagram protocol
+AX25_P_LQP         EQU 11000100b   ;Link Quality Protocol
+AX25_P_APPLETALK   EQU 11001010b   ;AppleTalk
+AX25_P_APPLETALK_ARP EQU 11001011b ;AppleTalk ARP
+AX25_P_IP          EQU 11001100b   ;TCP/IP Internet Protocol
+AX25_P_ARP         EQU 11001101b   ;TCP/IP Address Resolution Protocol
+AX25_P_FLEXNET     EQU 11001110b   ;FlexNet
+AX25_P_NETROM      EQU 11001111b   ;NET/ROM
+AX25_P_TEXT        EQU 11110000b   ;No Layer 3 implemented
+AX25_P_ESCAPE      EQU 11111111b   ;Escape character, next octet contains more
 
         ENDIF   ; AX25_INC
 

@@ -1,0 +1,93 @@
+
+
+
+  S0  - Ring to answer						0-255	rings		default:0
+  S1  - Number of rings						0-255	rings		default:0
+  S2  - Escape character					0-127	ASCII		default:43(+)
+  S3  - Carriage Return						0-127	ASCII		default:13(CR)
+  S4  - Line Feed							0-127	ASCII		default:10(LF)
+  S5  - Back Space							0-127	ASCII		default:8(BS)
+  S6  - Wait for dial tone					2-255	seconds		default:2
+  S7  - Wait for carrier					1-255	seconds		default:30
+  S8  - Comma pause time					0-255	seconds		default:2
+  S9  - Carrier response					1-255	0.1 sec.    default:6
+  S10 - Carrier loss delay					1-255	.1 sec.		default:7
+  S11 - Tone duration						50-255	msec.		default:70
+  S12 - Escape guard time					20-255	02 sec		default:50
+  S13 - Bit mapped UART status register
+  S14 - Bit mapped Option register
+			BIT								OFF	ON
+			B0 RESERVED
+			B1 echo							0	1*
+			B2 quiet mode					0*	1
+			B3 verbose						0	1*
+			B4 RESEVED
+			B5 tone/pulse					0*	1
+			B6 RESEVED
+			B7 originate/answer				0*	1	
+  S15 - Bit mapped Flag register
+  S16 - Test options
+			VALUE
+			0  default connection mode
+			1  local serial loopback
+			2  local hdlc loopback
+			3  remote hdlc loopback
+			4  remote serial loopback
+			5  ascii connect
+			6  KISS connect
+			7  SLIP connect
+			8  PPP connect
+
+  S17 - 
+  S18 - Test times							1-255	seconds		default:0
+  S19 - 
+  S20 - 
+  S21 - 
+  S22 - Bit mapped speaker options
+  S23 - 
+  S24 - 
+  S25 - Delay to DTR						0-255	.01 sec		default:5
+  S26 - RTS to CTS delay					0-255	.01 sec		default:1
+  S27 - 
+  S28 - 
+  S29 - 
+  S30 - inactivity before hang-up			0-255	10 sec		default:0
+  S31 - initial local serial baudrate
+  S32 - XON
+  S33 - XOFF
+  S34 - 
+  S35 - 
+  S36 - 
+  S37 - 
+  S38 - delay to forced disconnect
+  S39 - flow control
+  S40 - unit timer (low)					0-65536	clockticks	default: clock dependent
+  S41 - unit timer (high)
+  S42 - units per second low				0-65536	units/sec	default: clock dependent
+  S43 - units per second high
+  S44 - time (seconds)
+  S45 - time (minutes)
+  S46 - time (hours)
+  S47 - date (month)
+  S48 - date (year)
+  S49 - max framesize						0-256	256 bytes	default:3
+  S50 - S59	source callsign
+  S60 - S69	destination callsign
+  S70 - S79	digipeater 1
+  S80 - S89	digipeater 1
+  S90 - S99	digipeater 1
+  S100 - repeater hang (AXHANG)				0-256	1 sec		default:1
+  S101 - priority window (PRIACK)			0-256	units		default:30
+  S102 - slottime (SLOTTM)					0-256	units		default:8
+  S103 - transmit startup (TXDELAY)			0-256	units		default:15
+  S104 - repeater startup					0-256	units		default:15
+  S105 - remote receiver sync				0-256	units		default:5
+  S106 - ten minute transition limit		0-256	10 sec		default:60
+  S107 - anti-hogging limit					0-256	1 sec		default:1
+  S108 - receiver startup (TXTAIL)			0-256	units		default:1
+  S109 - 
+  S110 - S119
+  S120 - persistence (threshold)			0-256				default:63
+  S121 - 127
+
+

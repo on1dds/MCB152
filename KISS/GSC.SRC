@@ -1,0 +1,260 @@
+
+InitGSC:
+;==========================================================
+;[AL]:Initialize global serial port
+;==========================================================
+;InitGSC() is called at boot-time only. The routine
+;initializes the GSC and DMA port to be able to send and
+;receive data to and from the DK9RR modem.
+;----------------------------------------------------------
+
+;setup GSC hardware
+;------------------
+        mov     BAUD,#GSC_SPEED
+        mov     GMOD,#PR_SDLC+PL_32+CT_16+AL_8+M_NORMAL+XTCLK
+        mov     PCON,#10011100b
+        mov     IFS,#8                  ;8 bittimes between frames
+        clr     HBAEN                   ;disable hardware based ack.
+        setb    RXC                     ;enable external clocking
+        setb    TXC
+        mov     AMSK0,#0FFh             ;unmask all frames
+        mov     AMSK1,#0FFh
+        call    GSCClearRFIFO
+
+;init RX/GSC
+;-----------
+        movwabs rx_writeframe,RXBuf     ;init pointers and variables
+        movwabs rx_allocated,0          ;allocated memory in RXBuffer
+        mov     rx_framecount,#0
+        movwabs rx_framelen,0
+
+        call    GetGSC_Init
+
+
+;init TX/GSC
+;-----------
+        movwabs tx_readframe,TXBuf
+        movwabs tx_allocated,0          ;allocated memory in TXBuffer
+        mov     tx_framecount,#0
+        movwabs tx_framelen,0
+
+        clr     TX_BUSY                 ;busy indication while TX'ing
+        clr     TX_TAIL                 ;TX tail indication while TX'ing
+        clr     TEN                     ;transmit disable
+
+;enable GSC
+;----------
+        setb    DMA                     ;enable DMA ports
+        call    GetGSC_Init
+
+        ret
+
+
+GetGSC_Init:
+;==========================================================
+;
+;==========================================================
+        jb      RFNE,$                  ;wait 'til RFIFO is read by DMA
+        orl     DCON1,#00000010b        ;stop RX/DMA int
+        movw    rx_writedata,rx_writeframe
+        addwabs rx_writedata,2          ;init RX/DMA
+        movw    DAR1,rx_writedata       ;RX/DMA destination address
+        movwabs SAR1,RFIFO              ;RX/DMA source address
+        movwabs BCR1,MAXFRAMESIZE       ;init maximum framelength
+        mov     DCON1,#001101001b       ;set parameters and GO
+        setb    GREN
+        orl     PCON,#00010000b
+        ret
+
+
+GetGSC_Reject:
+GetGSC_Error:
+;==========================================================
+;[DMA1]:reject frame, exceeded MAXFRAMESIZE
+;[GSCRE]:frame error
+;==========================================================
+        pushstate
+        call    GetGSC_Init
+        popstate
+        reti
+
+GetGSC_Valid:
+;==========================================================
+;[GSCRV]:register valid RX data
+;==========================================================
+;data coming from the GSC are registered here. Buffers are
+;updated and the GSC is reactivated for receiving
+;----------------------------------------------------------
+        pushstate
+
+GGval_npstart:
+        mov     A,rx_allocatedH         ;check for buffer full
+        cjae    A,#HIGH(RXBUFSIZE-MAXFRAMESIZE),GGval_done
+
+        jb      RFNE,$                  ;wait 'til RFIFO is read by DMA
+        orl     DCON1,#00000010b        ;stop RX/DMA int
+
+;register frame
+;--------------
+        addwabs BCR1,-(MAXFRAMESIZE+1)
+        movwxc  rx_writeframe,BCR1      ;save framelength
+        addwabs rx_writeframe,2         ;skip framelength field
+        subw    rx_writeframe,BCR1      ;skip frame (BCR1 is negative)
+        subw    rx_allocated,BCR1
+
+;ring RX framebuffer
+;-------------------
+        mov     A,rx_writeframeH
+        cjb     A,#HIGH(RXBuf+RXBUFSIZE-MAXFRAMESIZE),GGval_initframe
+        movwabs BCR1,0
+        movwxc  rx_writeframe,BCR1
+        movwabs rx_writeframe,RXBuf
+
+
+;init for new RX frame
+;---------------------
+GGval_initframe:
+        inc     rx_framecount
+
+GGval_done:
+        call    GetGSC_Init
+
+        popstate                        ;load registers
+        reti
+
+
+PutGSC:
+;==========================================================
+;[AL]:Write frames to GSC using DMA
+;==========================================================
+;TX-data are prepared here. These data are only sent if
+;there is no RX of a frame and the DK9RR modem is not
+;receiving data.
+;----------------------------------------------------------
+        inc     kiss_randomize
+        jb      TX_TAIL,PG_goTXTail     ;make TX-tail
+        jb      TX_BUSY,PG_godone       ;TXing, exit
+        jnb     DCD,PG_godone           ;data carrier detect ?
+        mov     A,tx_framecount
+        jz      PG_godone               ;no frame, exit
+
+;persistance
+;-----------
+        mov     DPTR,#PersistTab
+        mov     A,kiss_randomize
+        movc    A,@A+DPTR
+        mov     R0,A
+        mov     A,kiss_persist
+        cjae    A,AR0,PG_tx
+        mov     A,kiss_slottime
+        call    Delay
+        sjmp    PG_done
+
+PG_goTXTail:    sjmp    PG_TXTail
+PG_godone:      sjmp    PG_done
+
+;switch to TX
+;------------
+PG_tx:  clr     GREN                    ;disable RX
+        anl     PCON,#NOT(00010000b)
+
+        clr     PTT                     ;push PTT
+        pbset   LED_PUTGSC
+        mov     A,kiss_txdelay          ;TX-delay
+        call    Delay
+
+PG_txmultiple:
+        clr     TX_TAIL
+        setb    TX_BUSY
+        mov     IFS,#8
+
+;start TX frame
+;--------------
+PG_cwr: movwcx  BCR0,tx_readframe
+        movw    tx_dmaframelen,BCR0
+        cwjnz   BCR0,PG_sendframe
+
+        movwabs tx_readframe,TXBuf      ;ring-buffer
+        sjmp    PG_cwr
+
+PG_sendframe:
+        movw    tx_readdata,tx_readframe
+        addwabs tx_readdata,2           ;skip framelength field
+        movw    SAR0,tx_readdata        ;TX-buff = source
+        movwabs DAR0,TFIFO              ;TX/FIFO = destination
+
+        clr     TDN                     ;clear transmit done flag
+        setb    TEN                     ;re-enable transmit
+        mov     DCON0,#010011001b       ;set parameters and GO
+
+PG_done:
+        sjmp    PG_exit
+
+
+;switch off TX
+;--------------
+PG_TXTail:
+        mov     A,tx_framecount
+        jnz     PG_txmultiple           ;more frames, send them too
+
+        jb      GRXD,PG_done            ;check if modem has done TX'ing
+        mov     A,kiss_txtail
+        call    Delay
+
+;switch to RX
+;------------
+        call    GSCClearRFIFO
+        call    GetGSC_Init
+        orl     PCON,#00010000b
+        clr     RDN
+
+        pbclr   PTT
+        pbclr   LED_PUTGSC
+        clr     TX_BUSY                 ;clear TX-BUSY flag
+        clr     TX_TAIL
+
+PG_exit:
+        ret
+
+
+PutGSC_Error:
+;==========================================================
+;GSCTE-handler:TX errors occured
+;==========================================================
+;notice that tx_framecount is NOT decremented. Because there
+;was a frame error, the frame must be retransmitted !
+;----------------------------------------------------------
+        pushstate
+        setb    TX_TAIL
+        movw    tx_readdata,tx_readframe
+        clr     TDN                     ;clear transmit done flag
+        setb    TEN                     ;re-enable transmit
+        popstate
+        reti
+
+
+PutGSC_Valid:
+;==========================================================
+;GSCTV-handler:TX/GSC was succesful
+;==========================================================
+;TX was succesful, pointers are updated and the number
+;of frames to send is decreased. A flag is set to make sure
+;a tail is appended to the frame sent.
+;----------------------------------------------------------
+        pushstate
+        setb    TX_TAIL
+
+        subw    tx_allocated,tx_dmaframelen;erase frame from TX-buffer
+        dec     tx_framecount              ;decrease TX framecounter
+
+        addw    tx_readdata,tx_dmaframelen ;jump over frame sent
+        movw    tx_readframe,tx_readdata   ;update framecounter
+
+        clr     TDN                     ;clear transmit done flag
+        setb    TEN                     ;re-enable transmit
+
+        pbclr   LED_TXFULL
+        popstate
+        reti
+
+

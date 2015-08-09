@@ -1,0 +1,68 @@
+	IFNDEF MESSAGE_INC
+MESSAGE_INC		EQU     1
+;**
+;**     $Filename: message.inc
+;**     $Release: 1
+;**     $Revision: 0
+;**     $Date: 20/07/2000
+;**     $Coding: Joachim Elen 
+;**     
+;**     Message Keys and queues
+;**
+
+
+;a list of predefined queues
+
+MQ_GSC_WRITE		EQU		1
+MQ_GSC_READ			EQU		2
+MQ_GSC_PRIORITY		EQU		3
+MQ_GSC_NORMAL		EQU		4
+MQ_GSC_RECEIVE		EQU		5
+
+
+;a list of predefined message keys.
+
+MSG_CONNECT_REQUEST				EQU	080h	;request the establishment of a connection
+MSG_CONNECT_INDICATION			EQU	081h	;indicate that a connection has been requested
+MSG_CONNECT_CONFIRM				EQU	083h	;confirm that a connection has been made
+
+MSG_DISCONNECT_REQUEST			EQU	084h	;request the release of a connection
+MSG_DISCONNECT_INDICATION		EQU	085h	;indicate that a disconnection has been requested
+MSG_DISCONNECT_CONFIRM			EQU	087h	;confirm that a disconnection has been made
+
+MSG_NEGOTIATE_REQUEST			EQU	088h	;
+MSG_NEGOTIATE_CONFIRM			EQU	08Bh
+
+MSG_FLOW_OFF_REQUEST			EQU	08Ch
+MSG_FLOW_OFF_INDICATION			EQU	08Dh
+MSG_FLOW_OFF_CONFIRM			EQU	08Fh
+
+MSG_FLOW_ON_REQUEST				EQU	090h
+MSG_FLOW_ON_INDICATION			EQU	091h
+MSG_FLOW_ON_CONFIRM				EQU	093h
+
+MSG_ERROR_INDICATION			EQU	095h
+MSG_QUIET_INDICATION			EQU	099h	;indicate that the channel is not busy
+MSG_BUSY_INDICATION				EQU	09Dh	;indicate that the channel is busy
+
+MSG_SEIZE_REQUEST				EQU	0A0h	;request access to the channel
+MSG_SEIZE_CONFIRM				EQU	0A3h	;confirm that access has been granted
+
+MSG_RELEASE_REQUEST				EQU	0A4h	;request release of the channel
+MSG_RELEASE_INDICATION			EQU	0A5h
+MSG_RELEASE_CONFIRM				EQU	0A7h
+
+MSG_DATA_REQUEST				EQU	0A8h
+MSG_DATA_INDICATION				EQU	0A9h
+MSG_DATA_CONFIRM				EQU	0ABh
+
+MSG_UNIT_DATA_REQUEST			EQU	0ACh
+MSG_UNIT_DATA_INDICATION		EQU	0ADh
+MSG_UNIT_DATA_CONFIRM			EQU	0AFh
+
+MSG_EXPEDITED_DATA_REQUEST		EQU	0B0h
+MSG_EXPEDITED_DATA_INDICATION	EQU	0B1h
+MSG_EXPEDITED_DATA_CONFIRM		EQU	0B3h
+
+    ENDIF   ;MESSAGE_INC
+

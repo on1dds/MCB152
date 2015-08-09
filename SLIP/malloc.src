@@ -1,0 +1,364 @@
+    IFNDEF  MALLOC_SRC
+MALLOC_SRC EQU TRUE
+;**
+;**     $Filename: alloc.src
+;**     $Author: on1dds
+;**     $Date: 16/10/2000
+;**
+;**     memory allocation routines
+;**     list maintainance
+;**
+;**     freeware
+;**
+
+            CPU     8051
+
+            LISTING OFF
+            INCLUDE "as.inc"			;extend pseudo instructions
+            INCLUDE "80c152.inc"		;assign 8052 register names
+			;INCLUDE "ascii.inc"			;assign ASCII character names
+			INCLUDE "macros.inc"		;macro definitions
+            LISTING ON
+
+MEM_BASE	EQU     0000h
+
+MEM			STRUCT
+succ		db  ?       ;*successor
+pred		db  ?       ;*predecessor
+blocks		db  ?       ;reserved 256-byte blocks
+MEM         ENDSTRUCT
+
+
+
+            SEGMENT BITDATA
+            ALIGN   8
+MEM_QBUF    db  8 dup (?)
+MEM_qbuf    EQU 020h+(MEM_QBUF>>3)  ;make bits byte-addressable
+
+            SEGMENT DATA
+MEM_qbuf0   db  ?
+MEM_qbuf1   db  ?
+MEM_qbuf2   db  ?
+MEM_qbuf3   db  ?
+MEM_qbuf4   db  ?
+MEM_qbuf5   db  ?
+MEM_qbuf6   db  ?
+MEM_qbuf7   db  ?
+
+
+            SEGMENT CODE
+;-------------------------------------------------------------------------
+            PROC    mem_init
+
+            mov     DPL,#high(MEM_BASE)
+
+            mov     DPH,#MEM_succ           ;firstblock->succ=MEM_LASTBLOCK
+            mov     A,DPL
+            movx    @DPTR,A
+
+            mov     DPH,#MEM_pred           ;firstblock->pred=NULL
+            movx    @DPTR,A
+
+            mov     DPH,#MEM_blocks         ;firstblock->size=MEM_len
+            mov     A,#MEM_len
+            movx    @DPTR,A
+
+            clr     A                       ;clear quick memory buffers
+            mov     MEM_qbuf,A
+
+            clr     C
+            ret
+
+            ENDP    mem_init
+;-------------------------------------------------------------------------
+
+
+;-------------------------------------------------------------------------
+            PROC    mem_qalloc
+
+            mov     DPL,#0
+
+            jbc     MEM_QBUF+7,buf7
+            jbc     MEM_QBUF+6,buf6
+            jbc     MEM_QBUF+5,buf5
+            jbc     MEM_QBUF+4,buf4
+            jbc     MEM_QBUF+3,buf3
+            jbc     MEM_QBUF+2,buf2
+            jbc     MEM_QBUF+1,buf1
+            jbc     MEM_QBUF+0,buf0
+            setb    C
+            ret
+
+buf0:       mov     DPH,MEM_qbuf0
+            clr     C
+            ret
+
+buf1:       mov     DPH,MEM_qbuf1
+            clr     C
+            ret
+
+buf2:       mov     DPH,MEM_qbuf2
+            clr     C
+            ret
+
+buf3:       mov     DPH,MEM_qbuf3
+            clr     C
+            ret
+
+buf4:       mov     DPH,MEM_qbuf4
+            clr     C
+            ret
+
+buf5:       mov     DPH,MEM_qbuf5
+            clr     C
+            ret
+
+buf6:       mov     DPH,MEM_qbuf6
+            clr     C
+            ret
+
+buf7:       mov     DPH,MEM_qbuf7
+            clr     C
+            ret
+
+            ENDP    mem_qalloc
+;-------------------------------------------------------------------------
+
+;-------------------------------------------------------------------------
+            PROC    mem_qfill
+			mov		B,A
+            mov     A,MEM_qbuf
+            cjne    A,#11111111b,$$a
+            clr     C
+            ret
+
+$$a:        mov		A,B
+            call    mem_alloc
+            jc      $$err
+
+            jnb     MEM_QBUF+0,buf0
+            jnb     MEM_QBUF+1,buf1
+            jnb     MEM_QBUF+2,buf2
+            jnb     MEM_QBUF+3,buf3
+            jnb     MEM_QBUF+4,buf4
+            jnb     MEM_QBUF+5,buf5
+            jnb     MEM_QBUF+6,buf6
+            jnb     MEM_QBUF+7,buf7
+
+            call    mem_free            ;(unreachable!)
+$$err:      setb    C
+            ret
+
+buf0:       mov     MEM_qbuf0,DPH
+            setb    MEM_QBUF+0
+            jmp     mem_qfill
+
+buf1:       mov     MEM_qbuf1,DPH
+            setb    MEM_QBUF+1
+            jmp     mem_qfill
+            
+buf2:       mov     MEM_qbuf2,DPH
+            setb    MEM_QBUF+2
+            jmp     mem_qfill
+
+buf3:       mov     MEM_qbuf3,DPH
+            setb    MEM_QBUF+3
+            jmp     mem_qfill
+
+buf4:       mov     MEM_qbuf4,DPH
+            setb    MEM_QBUF+4
+            jmp     mem_qfill
+
+buf5:       mov     MEM_qbuf5,DPH
+            setb    MEM_QBUF+5
+            jmp     mem_qfill
+
+buf6:       mov     MEM_qbuf6,DPH
+            setb    MEM_QBUF+6
+            jmp     mem_qfill
+
+buf7:       mov     MEM_qbuf7,DPH
+            setb    MEM_QBUF+7
+            jmp     mem_qfill
+
+            ENDP    mem_qfill
+;-------------------------------------------------------------------------
+
+;-------------------------------------------------------------------------
+            PROC    mem_alloc
+
+;INPUT
+;   ACC     =   number of 256 byte blocks to allocate
+;
+;OUTPUT
+;   DPTR    =   pointer to allocated memory
+
+
+_currblock  SET R0      ;block currently being processed
+_newblock   SET R1      ;position directly after current block
+_nextblock  SET R2      ;
+_allocsize  SET R3
+
+            pushm   AR0,AR1,AR2,AR3,DPH,DPL
+            jz      err                     ;nothing to alloc?
+
+;save allocsize parameter
+            mov     _allocsize,A
+            mov     _nextblock,#high(MEM_BASE)
+
+findgap:
+
+;read current record
+            mov     _currblock,_nextblock   ;make next block current
+
+            mov     DPL,_currblock          ;calc newblock address
+            mov     DPH,#MEM_blocks
+            movx    A,@DPTR
+            add     A,DPL
+            mov     _newblock,A
+
+            ;mov     DPL,_currblock          ;read nextblock address
+            mov     DPH,#MEM_succ
+            movx    A,@DPTR
+
+            clr     C                       ;check free memory between
+            mov     _nextblock,A            ;nextblock and newblock
+            subb    A,_newblock
+
+            clr     C                       ;subtract allocsize from freemem
+            subb    A,_allocsize
+
+            jnc     insert_newblock         ;insert_newblock if it fits
+
+            mov     A,_nextblock			;otherwise, while not last,
+            cjne    A,#0,findgap			;find gap in the next node
+
+err:        popm    DPL,DPH,AR3,AR2,AR1,AR0
+            setb    C
+            ret
+
+insert_newblock:
+            mov     DPL,_newblock           ;newblock->pred=*currblock
+            mov     DPH,#MEM_pred
+            mov     A,_currblock
+            movx    @DPTR,A
+
+            ;mov     DPL,_newblock           ;newblock->succ=*nextblock
+            mov     DPH,#MEM_succ
+            mov     A,_nextblock
+            movx    @DPTR,A
+
+            ;mov     DPL,_newblock           ;newblock->blocks=allocsize
+            mov     DPH,#MEM_blocks
+            mov     A,_allocsize
+            movx    @DPTR,A
+
+            mov     DPL,_nextblock          ;nextblock->pred=*new block
+            mov     DPH,#MEM_pred
+            mov     A,_newblock
+            movx    @DPTR,A
+
+            mov     DPL,_currblock          ;currblock->succ=*new block
+            mov     DPH,#MEM_succ
+            mov     A,_newblock
+            movx    @DPTR,A
+
+                
+            mov     DPH,_newblock           ;return new address
+            mov     DPL,#0
+
+            setb    EA
+            popm    ACC,ACC,AR3,AR2,AR1,AR0
+            clr     C
+            ret
+
+            ENDP    mem_alloc
+;-------------------------------------------------------------------------
+
+;-------------------------------------------------------------------------
+            PROC    mem_getsize
+			pushm	DPL,DPH
+
+			mov		DPL,DPH
+			mov		DPH,#MEM_blocks
+			movx	A,@DPTR
+
+			popm	DPH,DPL
+			clr		C
+			ret
+
+			ENDP
+;-------------------------------------------------------------------------
+
+;-------------------------------------------------------------------------
+            PROC    mem_resize
+            jz      mem_free
+            pushm   DPH,DPL,AR0,AR1
+
+            mov     DPL,DPH                 ;DPL = current block
+            mov     R0,A                    ;R0  = new size (allocsize)
+
+            mov     DPH,#MEM_succ           ;R1  = next block
+            movx    A,@DPTR
+
+            clr     C
+            subb    A,R0
+            clr     C
+            subb    A,DPL
+            jc      done
+
+            mov     DPH,#MEM_blocks
+            mov     A,R0
+            movx    @DPTR,A
+            clr     C
+
+done:       popm    AR1,AR0,DPL,DPH
+            ret
+
+            ENDP    mem_resize
+;-------------------------------------------------------------------------
+
+;-------------------------------------------------------------------------
+            PROC    mem_free
+
+;INPUT:
+;   DPTR    =   pointer to allocated memory
+
+            pushm   AR0,AR1,ACC
+
+            mov     A,DPH
+            jz      err
+            mov     DPL,A
+
+;read current record
+            mov     DPH,#MEM_pred           ;R0 = prev block
+            movx    A,@DPTR
+            mov     R0,A
+
+            mov     DPH,#MEM_succ           ;R1 = next block
+            movx    A,@DPTR
+            mov     R1,A
+
+;adjust successor
+            mov     DPL,R1
+            mov     DPH,#MEM_pred
+            mov     A,R0
+            movx    @DPTR,A
+
+            mov     DPL,R0
+            mov     DPH,#MEM_succ
+            mov     A,R1
+            movx    @DPTR,A
+
+            popm    ACC,AR1,AR0
+            clr     C
+            ret
+
+err:        popm    ACC,AR1,AR0
+            setb    C
+            ret
+
+            ENDP    mem_free
+;-------------------------------------------------------------------------
+    ENDIF
+

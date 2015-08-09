@@ -1,0 +1,165 @@
+;-------------------------------------------------------------------------
+            PROC    debug_listnodes
+
+;in:
+;DPH    =   LIST-structure
+;R0     =   first node
+
+            push    PSW
+            push    ACC
+            push    DPH
+            push    DPL
+            push    AR0
+
+            push    DPH
+            mov     DPTR,#txt_title
+            call    PutMessage
+            pop     DPH
+
+            mov     R1,DPH
+            jmp     check
+
+txt_title:  db  "&ADDR: NEXT,SIZE",CR
+            db  "----------------",CR,NULL
+
+loop:       mov     DPH,R1
+            mov     DPL,R0
+
+;show memory location
+            mov     A,#'&'              ;address identifier
+            call    PutChar
+
+            mov     A,DPL
+            call    PutHex8
+            clr     A
+            call    PutHex8
+            mov     A,#':'
+            call    PutChar
+            mov     A,#' '
+            call    PutChar
+
+;show next
+            mov     A,R1
+            add     A,#GN_next
+            mov     DPH,A
+            mov     DPL,R0
+            movx    A,@DPTR
+
+            call    PutHex8
+            clr     A
+            call    PutHex8
+            mov     A,#','
+            call    PutChar
+
+;show size
+            mov     A,R1
+            add     A,#GN_size
+            mov     DPH,A
+            mov     DPL,R0
+            movx    A,@DPTR
+            call    PutHex8
+            inc     DPH
+            movx    A,@DPTR
+            call    PutHex8
+
+            call    NewLine
+
+;select next
+            mov     DPH,R1              ;list-base pointer
+            mov     DPL,R0              ;node pointer
+            movx    A,@DPTR
+            mov     R0,A
+
+check:      cjne    R0,#0,loop
+
+            call    NewLine
+
+            pop     AR0
+            pop     DPL
+            pop     DPH
+            pop     ACC
+            pop     PSW
+            ret
+            ENDP    debug_listnodes
+
+;-------------------------------------------------------------------------
+            PROC    debug_listmem
+
+            push    PSW
+            push    ACC
+            push    DPH
+            push    DPL
+            push    AR0
+
+            mov     DPTR,#txt_title
+            call    PutMessage
+
+            mov     R0,#high(MEM_BASE)
+
+nextnode:   mov     DPL,R0
+
+;show memory location
+            mov     A,#'&'              ;address identifier
+            call    PutChar
+
+            mov     A,DPL
+            call    PutHex8
+            clr     A
+            call    PutHex8
+            mov     A,#':'
+            call    PutChar
+            mov     A,#' '
+            call    PutChar
+
+;show successor
+            mov     DPH,#MEM_succ
+            movx    A,@DPTR
+            call    PutHex8
+            clr     A
+            call    PutHex8
+            mov     A,#','
+            call    PutChar
+
+;show predecessor
+            mov     DPH,#MEM_pred
+            movx    A,@DPTR
+            call    PutHex8
+            clr     A
+            call    PutHex8
+            mov     A,#','
+            call    PutChar
+
+;show number of blocks
+            mov     DPH,#MEM_blocks
+            movx    A,@DPTR
+            call    PutHex8
+
+;end of routine
+            call    NewLine
+
+            mov     DPH,#MEM_succ
+            movx    A,@DPTR
+            mov     R0,A
+            jnz     nextnode
+
+done:       call    NewLine
+
+            pop     AR0
+            pop     DPL
+            pop     DPH
+            pop     ACC
+            pop     PSW
+            ret
+
+txt_title   db      "ADDR: SUCC,PRED,BLOCKS",CR
+            db      "----------------------",CR,NULL
+            ENDP    debug_listmem
+
+
+
+
+
+;=========================================================================
+;=========================================================================
+
+

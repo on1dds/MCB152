@@ -1,0 +1,4 @@
+layout\		- schematics and PCB layouts of the MCB152
+connect.pdf	- MCB152 connector pinouts
+hwref_e.pdf	- hardware reference manual (english)
+heref_nl.pdf	- hardware reference manual (nederlands)
