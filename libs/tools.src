@@ -1,0 +1,299 @@
+
+
+CharToUpper:
+;==========================================================
+;convert char to uppercase
+;==========================================================
+        cja     A,#'z',C2U_done
+        cjb     A,#'a',C2U_done
+        clr     C
+        subb    A,#'a'-'A'
+C2U_done:
+        ret
+
+CharToLower:
+;==========================================================
+;convert char to lowercase
+;==========================================================
+        cja     A,#'Z',C2L_done
+        cjb     A,#'A',C2L_done
+        add     A,#'a'-'A'
+C2L_done:
+        ret
+
+
+Hex2ASCII:
+;==========================================================
+;convert lownibble to ASCII-character
+;==========================================================
+;INPUT: ACC    = 4 bit value of ASCII character
+;OUTPUT:ACC    = ASCII character (0-9,A-F)
+;----------------------------------------------------------
+        anl     A,#0Fh
+        clr     C
+        subb    A,#10
+        jc      h2a_num
+        add     A,#07
+h2a_num:add     A,#03Ah
+        clr     C
+        ret
+
+ASCII2Dec:
+;==========================================================
+;convert an ASCII-character to its decimal-value
+;==========================================================
+;INPUT:         ACC = ASCII character (0-9)
+;OUTPUT:        ACC = 4 bit value of ASCII character
+;----------------------------------------------------------
+        clr     C
+        subb    A,#'0'
+        jc      a2d_error
+        subb    A,#10
+        jnc     a2d_error
+        add     A,#10
+        clr     C
+        ret
+
+a2d_error:
+        setb    C
+        ret
+
+
+ASCII2Hex:
+;==========================================================
+;convert an ASCII-character to its hex-value
+;==========================================================
+;INPUT:         ACC = ASCII character (0-9,A-F)
+;OUTPUT:        ACC = 4 bit value of ASCII character
+;----------------------------------------------------------
+        push    AR1
+        push    AR0
+        pushw   DP
+
+        call    CharToUpper
+        mov     R1,A
+        mov     DPTR,#hex_data
+        mov     R0,#-1
+
+A2H_loop:
+        inc     R0
+        mov     A,R0
+        movc    A,@A+DPTR
+        jz      A2H_error
+        cjne    A,AR1,A2H_loop
+        mov     A,R0
+        sjmp    A2H_done
+
+A2H_error:
+        setb    C
+
+A2H_done:
+        popw    DP
+        pop     AR0
+        pop     AR1
+        ret
+
+hex_data: db '0123456789ABCDEF',0
+
+
+
+AddDecCipher:
+;==========================================================
+;==========================================================
+;----------------------------------------------------------
+        pushw   AWR1
+        push    AR4
+        push    ACC
+
+        push    ACC
+        mov     R4,#9
+        movw    WR1,AWR0
+adc_mul10:
+        addw    WR0,WR1
+        jc      adc_err1
+        djnz    R4,adc_mul10
+        pop     ACC
+        addwacc WR0
+        jc      adc_err2
+        sjmp    adc_done
+
+adc_err1:
+        pop     ACC
+adc_err2:       
+        setb    C
+
+adc_done:
+        pop     ACC
+        pop     AR4
+        popw    AWR1
+        ret
+
+
+
+AddHexCipher:
+;==========================================================
+;add a 4-bit number to a 16 bit register
+;==========================================================
+;----------------------------------------------------------
+        push    ACC
+        mov     A,R1
+        cjae    A,#10h,ahc_error
+        swap    A
+        anl     A,#0F0h
+        mov     R1,A
+        mov     A,R0
+        swap    A
+        push    ACC
+        anl     A,#0F0h
+        mov     R0,A
+        pop     ACC
+        anl     A,#0Fh
+        orl     A,R1
+        mov     R1,A
+        pop     ACC
+        anl     A,#0Fh
+        orl     A,R0
+        xch     A,R0
+
+ahc_done:
+        clr     C
+        clr     A
+        ret
+
+ahc_error:
+        pop     ACC
+        setb    C
+        ret
+
+
+
+
+CRCInit:
+;==========================================================
+;init CRC 
+;==========================================================
+;OUTPUT:        WR0     = initialized CRC
+;----------------------------------------------------------
+        movwabs WR0,-1
+        clr     C
+        ret
+
+CRCPass:
+;==========================================================
+;16 bit CRC checksum calculation
+;==========================================================
+;INPUT:         ACC    = byte to process CRC on
+;               WR0    = temporary CRC
+;
+;OUTPUT:        WR0    = temporary CRC
+;----------------------------------------------------------
+        pushw   DP
+        push    ACC
+        mov     DPTR,#CRCTable        ;setup CRC-table pointer
+        xrl     A,R0                 ;xor databyte with CRC-low
+        mov     DPL,A                ;use as index to CRC-low
+        clr     A
+        movc    A,@A+DPTR            ;load result into databyte
+        xrl     A,R1                 ;xor databyte with CRC-high
+        mov     R0,A                 ;store result in CRC-low
+        inc     DPH
+        clr     A
+        movc    A,@A+DPTR            ;use as index to CRC-high
+        mov     R1,A                 ;store result in CRC-high
+        pop     ACC
+        popw    DP
+        clr     C
+        ret
+
+CRCFinish:
+;==========================================================
+;Finish CRC checking
+;==========================================================
+;INPUT:         WR0     = temporary CRC
+;
+;OUTPUT:        WR0     = CRC checksum
+;----------------------------------------------------------
+        push    ACC
+        mov     A,R0
+        cpl     A
+        mov     R0,A
+        mov     A,R1
+        cpl     A
+        mov     R1,A
+        pop     ACC
+        clr     C
+        ret
+
+        ORG     HIGH($+256) SHL 8
+;==========================================================
+;CRC table
+;==========================================================
+CRCTable:
+        db 000h,089h,012h,09Bh,024h,0ADh,036h,0BFh
+        db 048h,0C1h,05Ah,0D3h,06Ch,0E5h,07Eh,0F7h
+        db 081h,008h,093h,01Ah,0A5h,02Ch,0B7h,03Eh
+        db 0C9h,040h,0DBh,052h,0EDh,064h,0FFh,076h
+        db 002h,08Bh,010h,099h,026h,0AFh,034h,0BDh
+        db 04Ah,0C3h,058h,0D1h,06Eh,0E7h,07Ch,0F5h
+        db 083h,00Ah,091h,018h,0A7h,02Eh,0B5h,03Ch
+        db 0CBh,042h,0D9h,050h,0EFh,066h,0FDh,074h
+        db 004h,08Dh,016h,09Fh,020h,0A9h,032h,0BBh
+        db 04Ch,0C5h,05Eh,0D7h,068h,0E1h,07Ah,0F3h
+        db 085h,00Ch,097h,01Eh,0A1h,028h,0B3h,03Ah
+        db 0CDh,044h,0DFh,056h,0E9h,060h,0FBh,072h
+        db 006h,08Fh,014h,09Dh,022h,0ABh,030h,0B9h
+        db 04Eh,0C7h,05Ch,0D5h,06Ah,0E3h,078h,0F1h
+        db 087h,00Eh,095h,01Ch,0A3h,02Ah,0B1h,038h
+        db 0CFh,046h,0DDh,054h,0EBh,062h,0F9h,070h
+        db 008h,081h,01Ah,093h,02Ch,0A5h,03Eh,0B7h
+        db 040h,0C9h,052h,0DBh,064h,0EDh,076h,0FFh
+        db 089h,000h,09Bh,012h,0ADh,024h,0BFh,036h
+        db 0C1h,048h,0D3h,05Ah,0E5h,06Ch,0F7h,07Eh
+        db 00Ah,083h,018h,091h,02Eh,0A7h,03Ch,0B5h
+        db 042h,0CBh,050h,0D9h,066h,0EFh,074h,0FDh
+        db 08Bh,002h,099h,010h,0AFh,026h,0BDh,034h
+        db 0C3h,04Ah,0D1h,058h,0E7h,06Eh,0F5h,07Ch
+        db 00Ch,085h,01Eh,097h,028h,0A1h,03Ah,0B3h
+        db 044h,0CDh,056h,0DFh,060h,0E9h,072h,0FBh
+        db 08Dh,004h,09Fh,016h,0A9h,020h,0BBh,032h
+        db 0C5h,04Ch,0D7h,05Eh,0E1h,068h,0F3h,07Ah
+        db 00Eh,087h,01Ch,095h,02Ah,0A3h,038h,0B1h
+        db 046h,0CFh,054h,0DDh,062h,0EBh,070h,0F9h
+        db 08Fh,006h,09Dh,014h,0ABh,022h,0B9h,030h
+        db 0C7h,04Eh,0D5h,05Ch,0E3h,06Ah,0F1h,078h
+                
+        db 000h,011h,023h,032h,046h,057h,065h,074h
+        db 08Ch,09Dh,0AFh,0BEh,0CAh,0DBh,0E9h,0F8h
+        db 010h,001h,033h,022h,056h,047h,075h,064h
+        db 09Ch,08Dh,0BFh,0AEh,0DAh,0CBh,0F9h,0E8h
+        db 021h,030h,002h,013h,067h,076h,044h,055h
+        db 0ADh,0BCh,08Eh,09Fh,0EBh,0FAh,0C8h,0D9h
+        db 031h,020h,012h,003h,077h,066h,054h,045h
+        db 0BDh,0ACh,09Eh,08Fh,0FBh,0EAh,0D8h,0C9h
+        db 042h,053h,061h,070h,004h,015h,027h,036h
+        db 0CEh,0DFh,0EDh,0FCh,088h,099h,0ABh,0BAh
+        db 052h,043h,071h,060h,014h,005h,037h,026h
+        db 0DEh,0CFh,0FDh,0ECh,098h,089h,0BBh,0AAh
+        db 063h,072h,040h,051h,025h,034h,006h,017h
+        db 0EFh,0FEh,0CCh,0DDh,0A9h,0B8h,08Ah,09Bh
+        db 073h,062h,050h,041h,035h,024h,016h,007h
+        db 0FFh,0EEh,0DCh,0CDh,0B9h,0A8h,09Ah,08Bh
+        db 084h,095h,0A7h,0B6h,0C2h,0D3h,0E1h,0F0h
+        db 008h,019h,02Bh,03Ah,04Eh,05Fh,06Dh,07Ch
+        db 094h,085h,0B7h,0A6h,0D2h,0C3h,0F1h,0E0h
+        db 018h,009h,03Bh,02Ah,05Eh,04Fh,07Dh,06Ch
+        db 0A5h,0B4h,086h,097h,0E3h,0F2h,0C0h,0D1h
+        db 029h,038h,00Ah,01Bh,06Fh,07Eh,04Ch,05Dh
+        db 0B5h,0A4h,096h,087h,0F3h,0E2h,0D0h,0C1h
+        db 039h,028h,01Ah,00Bh,07Fh,06Eh,05Ch,04Dh
+        db 0C6h,0D7h,0E5h,0F4h,080h,091h,0A3h,0B2h
+        db 04Ah,05Bh,069h,078h,00Ch,01Dh,02Fh,03Eh
+        db 0D6h,0C7h,0F5h,0E4h,090h,081h,0B3h,0A2h
+        db 05Ah,04Bh,079h,068h,01Ch,00Dh,03Fh,02Eh
+        db 0E7h,0F6h,0C4h,0D5h,0A1h,0B0h,082h,093h
+        db 06Bh,07Ah,048h,059h,02Dh,03Ch,00Eh,01Fh
+        db 0F7h,0E6h,0D4h,0C5h,0B1h,0A0h,092h,083h
+        db 07Bh,06Ah,058h,049h,03Dh,02Ch,01Eh,00Fh
+
+
+

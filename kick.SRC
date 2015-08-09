@@ -1,0 +1,904 @@
+;==========================================================
+;PROJECT: MCB152 Kickstart
+;DATE   : 24 june 1998
+;VERSION: 1.0c
+;
+;COMMENT: MCB152 Kickstart is a loader/debugger environment
+;         for 80c152 applications. Automatic baudrate
+;         detection is used before starting off, with loss
+;         of the first <CR> or <SPACE> character.
+;
+;HARDWARE EXTENSION:none
+;==========================================================
+VERSION         EQU 1
+REVISION        EQU 0
+
+KICK_VERSION    EQU 1
+KICK_REVISION   EQU 0
+
+
+        $NOPAGING
+        $NOLIST
+        $MOD152
+
+        $INCLUDE(..\include\macros.inc)
+        $INCLUDE(..\include\init.inc)
+        $INCLUDE(..\include\ascii.inc)
+        $INCLUDE(..\include\hardware.inc)
+
+        $INCLUDE(kick.inc)
+
+        $LIST
+
+;code addressing
+;===============
+        SETCODE Kickstart,0005Bh
+        SETCODE KickLibrary,0F000h
+        SETCODE WarmReboot,00000h
+        SETCODE ColdReboot,0FFF0h
+        SETCODE KickID,0FFFAh
+
+        CSEG
+;interrupt vectors
+;=================
+        ORG     RESET
+        ljmp    Kickstart
+
+        VOIDINT EXTI0
+        VOIDINT TIMER0
+        VOIDINT EXTI1
+        VOIDINT TIMER1
+        VOIDINT SINT
+        VOIDINT GSCRV
+        VOIDINT GSCRE
+        VOIDINT DMA0
+        VOIDINT GSCTV
+        VOIDINT GSCTE
+        VOIDINT DMA1
+
+        ORG     Kickstart
+;==========================================================
+;Command line interface
+;==========================================================
+
+;------ Initialization
+
+        mov     IE,#0                   ;disable interrupts
+        mov     R0,#01h                 ;clear on-chip RAM
+        clr     A
+KS_clearmem:
+        mov     @R0,A
+        inc     R0
+        cjne    A,AR0,KS_clearmem
+
+        mov     SP,#127                 ;init stack pointer
+        pushret RESET
+
+        call    CheckHardCode
+        jnc     KS_autobaud
+        call    InitCRAM                ;init application memory
+                       
+KS_autobaud:
+        clr     A
+        call    AutoBaud                ;init LSC port
+
+        clr     CLI_HELD
+        setb    CLI_NOPROMPT
+
+
+CLI_Shell:
+;==========================================================
+;Kickstart command line interface
+;==========================================================
+        pushret CLI_shell
+
+        jnb     CLI_HELD,CLI_getcmd
+        clr     F0
+        call    GetChar
+        cje     A,#SPACE,CLI_continue
+        cjb     A,#SPACE,CLI_hold
+        mov     CLI_lastcmd,A
+
+        setb    F0
+        call    ShowPrompt
+        sjmp    CLIgc_chkchar
+        
+CLI_hold:
+;----------------------------
+;execution hold
+;----------------------------
+        clr     CLI_GOTEND
+        clr     CLI_HELD
+        ret
+
+CLI_continue:
+;----------------------------
+;execution continue
+;----------------------------
+        mov     A,CLI_lastcmd
+        jmp     CLIgc_chkchar
+
+CLI_done1:
+        ret
+
+CLI_pgcmd:
+        call    PutChar
+        jnb     CLI_NOPROMPT,CLIgc_readchar
+        clr     CLI_NOPROMPT
+
+CLI_getcmd:
+;----------------------------
+;command interpreter
+;----------------------------
+        jb      CLI_NOPROMPT,CLIgc_readchar
+        call    ShowPrompt
+
+CLIgc_readchar:
+        clr     F0
+        call    GetChar
+
+CLIgc_chkchar:
+        jb      ACC.7,CLIgc_readchar
+        cje     A,#LF,CLIgc_readchar
+        cje     A,#CR,CLIgc_legalchar
+        cjae    A,#SPACE,CLIgc_legalchar
+        jb      CLI_NOPROMPT,CLIgc_readchar
+        call    Newline
+        sjmp    CLI_getcmd
+        
+CLIgc_legalchar:
+        lcje    A,#':',IHexLoader               ;IntelHEX line
+        lcje    A,#SEMICOLON,GetRemark          ;remark
+        lcje    A,#'#',GetRemark
+        lcje    A,#'*',GetRemark
+
+        jnb     CLI_NOPROMPT,CLIgc_echocmd
+        cje     A,#CR,CLIgc_readchar
+        call    ShowPrompt
+        clr     CLI_NOPROMPT
+
+CLIgc_echocmd:
+        jb      CLI_HELD,CLIgc_noecho
+        call    PutChar
+        call    CharToUpper
+
+CLIgc_noecho:
+        cje     A,#SPACE,CLIgc_readchar
+        lcje    A,#CR,CLI_done
+
+        mov     CLI_lastcmd,A
+        lcje    A,#'M',Monitor                  ;Monitor ASCII dump
+        lcje    A,#'D',Disasm                   ;Disassemble
+
+        mov     cli_status,#0
+        ;cjb     A,#SPACE,CLI_initstat
+        lcje    A,#'G',GoExecute                ;Go Execute
+        lcje    A,#'S',SetDebugreg
+
+        mov     B,A
+CLIgc_waitcr:
+        setb    F0
+        call    GetChar
+        cje     A,#CR,CLIgc_crexecute
+        cjae    A,#SPACE,CLIgc_waitcr
+        sjmp    CLI_initstat
+
+CLIgc_crexecute:
+        mov     A,B
+        lcje    A,#'I',ShowInfo
+        lcje    A,#'?',CLIHelp                  ;Help menu
+        lcje    A,#'H',CLIHelp
+        lcje    A,#'C',GoInitCRAM               ;Clear memory
+        lcje    A,#'V',ViewDebugRegs            ;View Debug registers
+
+;error handling
+;--------------
+        mov     A,#ERR_COMMAND
+        call    PrintError              ;punish other with errormessage
+        call    WaitSilence             ;hold input during a datastream
+        movwabs cli_param1,0
+        movwabs cli_param2,0
+CLI_initstat:
+        mov     cli_status,#0           ;init params & flags
+
+CLI_done:
+        ret
+
+
+ShowPrompt:
+        pushstate
+        movw    DP,cli_param1
+        call    PutAddress
+        mov     A,#'>'
+        call    PutChar
+        popstate
+        ret
+
+GetRemark:
+;==========================================================
+;read a remark line without echoing
+;==========================================================
+        clr     F0
+        call    GetChar
+        cjae    A,#SPACE,GetRemark
+        setb    CLI_NOPROMPT
+        ret
+
+ShowInfo:
+;==========================================================
+;show information about the makers
+;==========================================================
+;
+;----------------------------------------------------------
+        mov     DPTR,#txt_makers
+        call    PutMessage
+        ret
+
+GoExecute:
+;==========================================================
+;execute program in code memory
+;==========================================================
+;readout startaddress first. If just <CR> is given, the
+;startvector will be taken from cli_param1
+;----------------------------------------------------------
+        setb    F0
+        call    GetHex16
+        jnc     GOXp1_valid
+        lcje    A,#CR,Execute
+        cjb     A,#SPACE,GOX_done
+        mov     A,#ERR_ILLEGALCHAR
+        call    PrintError
+GOX_done:
+        ret
+
+GOXp1_valid:
+        cje     A,#CR,GOX_store
+        call    GetChar
+        sjmp    GOXp1_valid
+
+GOX_store:
+        movw    cli_param1,WR0
+        jmp     Execute
+
+
+GoInitCRAM:
+;==========================================================
+;Clear Program Memory with clear message
+;==========================================================
+        mov     DPTR,#txt_memclr
+        call    PutMessage
+        jmp     InitCRAM
+
+
+ViewDebugRegs:
+;==========================================================
+;list an overview of the contents of debug registers
+;==========================================================
+;----------------------------------------------------------
+        mov     R0,#0
+
+VDR_printreg:
+        mov     DPTR,#dbgreg_pointers
+        mov     A,R0
+        rl      A
+
+        push    AR0
+        push    ACC
+        movc    A,@A+DPTR
+        mov     R1,A
+        pop     ACC
+        inc     DPTR
+        movc    A,@A+DPTR
+        mov     DPL,A
+        mov     DPH,R1
+        clr     A
+        call    PrintReg
+        call    VDR_showvalue
+
+        pop     AR0
+        inc     R0
+        cjne    R0,#5,VDR_printreg
+
+        mov     DPTR,#dbreg_pc
+        call    PutMessage
+        mov     A,#'='
+        call    PutChar
+        movw    DP,cli_param1
+        call    PutAddress
+        call    NewLine
+
+VDR_printrxreg:
+        mov     DPTR,#txt_ar
+        clr     A
+        call    PutMessage
+        mov     A,R0
+        add     A,#'0'-5
+        call    PutChar
+        call    VDR_showvalue
+        inc     R0
+        cjne    R0,#CR,VDR_printrxreg
+VDR_done:
+        call    NewLine
+        ret
+
+VDR_showvalue:
+        mov     A,#'='
+        call    PutChar
+        mov     A,R0
+        add     A,#dbg_registers
+        mov     R1,A
+        mov     A,@R1
+        call    PutHex8
+        mov     DPTR,#txt_gap
+        call    PutMessage
+        ret
+
+SetDebugReg:
+;==========================================================
+;list an overview of the contents of debug registers
+;==========================================================
+        setb    F0
+
+SDR_waitforreg:
+        call    GetChar
+        call    CharToUpper
+        cjb     A,#SPACE,SDR_done
+        cje     A,#SPACE,SDR_waitforreg
+        mov     R0,#dbg_registers
+        cje     A,#'A',SDR_accorreg
+        inc     R0
+        cje     A,#'B',SDR_setval
+        inc     R0
+        cje     A,#'P',SDR_psw
+        cje     A,#'D',SDR_dptr
+
+
+SDR_waitcrerror:
+        call    SDR_getchar
+        cjae    A,#SPACE,SDR_waitcrerror
+
+SDR_error:
+        mov     A,#ERR_REGNAME
+        call    PrintError
+
+SDR_done:
+        ret
+
+SDR_accorreg:
+        call    SDR_getchar
+        cje     A,#'C',SDR_accumulator
+        cje     A,#'R',SDR_register
+        jmp     SDR_waitcrerror
+
+SDR_accumulator:
+        call    SDR_getchar
+        cjne    A,#'C',SDR_waitcrerror
+        sjmp    SDR_setval
+
+SDR_psw:
+        call    SDR_getchar
+        cjne    A,#'S',SDR_waitcrerror
+        call    SDR_getchar
+        cjne    A,#'W',SDR_waitcrerror
+        sjmp    SDR_setval
+
+SDR_dptr:
+        call    SDR_getchar
+        cjne    A,#'P',SDR_waitcrerror
+        call    SDR_getchar
+        inc     R0
+        cje     A,#'H',SDR_setval
+        inc     R0
+        cje     A,#'L',SDR_setval
+        jmp     SDR_waitcrerror
+
+SDR_register:
+        call    GetHex4
+        jc      SDR_waitcrerror
+        cjae    A,#8,SDR_waitcrerror
+        add     A,R0
+        add     A,#5
+        mov     R0,A
+
+SDR_setval:
+        push    AR0
+        call    GetHex8
+        jc      SDRsv_fault
+        mov     A,R0
+        pop     AR0
+        mov     @R0,A
+        ret
+
+SDRsv_fault:
+        pop     AR0
+        cjb     A,#SPACE,SDR_done
+        mov     A,#ERR_PARAMETER
+        jmp     PrintError
+
+SDR_getchar:
+        call    GetChar
+        call    CharToUpper
+        cje     A,#CR,SDRgc_error
+        cjb     A,#SPACE,SDRgc_leave
+        ret
+
+SDRgc_error:
+        dec     SP
+        dec     SP
+        sjmp    SDR_error
+
+SDRgc_leave:
+        dec     SP
+        dec     SP
+        ret
+
+dbgreg_pointers:
+        dw      reg_acc
+        dw      dbreg_b
+        dw      reg_psw
+        dw      reg_dph
+        dw      reg_dpl
+
+txt_gap:db      '   ',0
+dbreg_b: db     '  ',('B'+128)
+dbreg_pc:db     ' PC',0
+
+
+CLIHelp:
+;==========================================================
+;Bootstrap loader help
+;==========================================================
+;just gives a textfile with command help
+;----------------------------------------------------------
+        mov     DPTR,#txt_bootmsg       ;show programname
+        call    PutMessage
+
+        mov     R0,#22
+CLH_underline:
+        mov     A,#'-'
+        call    PutChar
+        djnz    R0,CLH_underline
+        call    NewLine
+
+        mov     DPTR,#txt_help
+        jmp     PutMessage
+
+
+;**********************************************************
+;***************** S U B R O U T I N E S ******************
+;**********************************************************
+
+
+
+CheckHardCode:
+;==========================================================
+;compare data in CRAM with EPROM 
+;==========================================================
+        mov     DPTR,#ColdReboot
+
+ch_loop:mov     P2,DPH
+        mov     R0,DPL
+        clr     A
+        movc    A,@A+DPTR
+        mov     B,A
+        movx    A,@R0
+        cjne    A,B,ch_fail
+        inc     DPTR
+        mov     A,DPH
+        jnz     ch_loop
+        clr     C
+        ret
+
+ch_fail:setb    C
+        ret
+
+InitCRAM:
+;==========================================================
+;Init Program Memory
+;==========================================================
+;zerofill CRAM and install public library
+;----------------------------------------------------------
+        clr     A                       ;init application memory
+        call    ClearXRam
+
+InstallHardCode:
+;==========================================================
+;install bootstrap return routine in RAM
+;==========================================================
+        pushstate
+        mov     DPTR,#KickLibrary
+
+ih_copy:clr     A
+        movc    A,@A+DPTR
+        movx    @DPTR,A
+        inc     DPTR
+        mov     A,DPH
+        jnz     ih_copy
+        popstate
+        ret
+
+
+Execute:
+;==========================================================
+;execute program in code memory
+;==========================================================
+;INPUT: cli_param1 contains the startvector
+;----------------------------------------------------------
+
+;------------------
+;check bootvector
+;------------------
+        movw    DP,cli_param1
+        movx    A,@DPTR
+        jnz     EXE_boot
+        inc     DPTR
+        movx    A,@DPTR
+        jnz     EXE_boot
+        inc     DPTR
+        movx    A,@DPTR
+        jnz     EXE_boot
+
+EXE_novect:
+;------------------
+;no bootvector
+;------------------
+        mov     A,#ERR_NOBOOTVECT
+        call    PrintError
+        movw    DP,cli_param1
+        jmp     PutAddress
+
+EXE_boot:
+;------------------
+;jump bootvector
+;------------------
+        call    CheckHardCode
+        jc      EXE_nobootcode
+
+        mov     DPTR,#txt_warmboot
+        call    PutMessage
+        movw    DP,cli_param1
+        call    PutAddress
+        call    NewLine
+
+        push    PSW
+        pushret EXE_return
+        pushret GoCRAM                  ;returnaddress from CRAM
+        movw    DP,cli_param1           ;jumpaddress in CRAM
+        pushw   DP
+
+        mov     DPL,dbg_dpl
+        mov     DPH,dbg_dph
+        mov     B,dbg_b
+        mov     PSW,dbg_psw
+        mov     A,dbg_acc
+        mov     R0,dbg_ar0
+        mov     R1,dbg_ar1
+        mov     R2,dbg_ar2
+        mov     R3,dbg_ar3
+        mov     R4,dbg_ar4
+        mov     R5,dbg_ar5
+        mov     R6,dbg_ar6
+        mov     R7,dbg_ar7
+        jmp     GoCRAM
+
+EXE_return:
+        mov     dbg_ar0,R0
+        mov     dbg_ar1,R1
+        mov     dbg_ar2,R2
+        mov     dbg_ar3,R3
+        mov     dbg_ar4,R4
+        mov     dbg_ar5,R5
+        mov     dbg_ar6,R6
+        mov     dbg_ar7,R7
+        mov     dbg_psw,PSW
+        mov     dbg_b,B
+        mov     dbg_acc,A
+        mov     dbg_dpl,DPL
+        mov     dbg_dph,DPH
+        pop     PSW
+        mov     DPTR,#txt_ready
+        call    PutMessage
+        ret
+
+EXE_nobootcode:
+;------------------
+;bootcode overwritten
+;------------------
+        mov     A,#ERR_NOBOOTCODE
+        jmp     PrintError
+
+PrintError:
+;==========================================================
+;print a system error
+;==========================================================
+;INPUT: ACC = errorcode
+;----------------------------------------------------------
+        jnz     PERR_start
+        ret
+
+PERR_start:
+        push    ACC
+        mov     DPTR,#txt_error
+        call    PutMessage
+        pop     ACC
+
+        cjb     A,#error_count,PERR_print
+        push    ACC
+        mov     DPTR,#txt_unknown
+        call    PutMessage
+        pop     ACC
+        call    PutDec8
+        jmp     NewLine
+
+PERR_print:
+        rl      A
+        mov     DPTR,#error_offsets
+        addwacc DP
+
+        clr     A
+        movc    A,@A+DPTR
+        push    ACC
+        mov     A,#1
+        movc    A,@A+DPTR
+        mov     DPL,A
+        pop     DPH
+        call    PutMessage
+        jmp     NewLine
+
+Get2Params:
+
+G2P_getparam1:
+        setb    F0
+        call    GetHex16
+        jnc     DASgp1_valid
+        cje     A,#CR,G2P_done
+        jmp     G2P_error
+
+DASgp1_valid:
+        cje     A,#SPACE,DASgp1_store
+        movw    cli_param1,WR0
+        sjmp    G2P_done
+
+DASgp1_store:
+        movw    cli_param1,WR0
+
+G2P_getparam2:
+        setb    F0
+        call    GetHex16
+        jnc     DASgp2_store
+        cje     A,#SPACE,G2P_done
+        cje     A,#CR,G2P_done
+        
+G2P_error:
+        setb    C
+        ret
+
+DASgp2_store:
+        movw    cli_param2,WR0
+        setb    CLI_GOTEND
+
+
+G2P_parambound:
+        cwjb    cli_param1,cli_param2,G2P_done
+        movwabs cli_param2,-1
+
+G2P_done:
+        clr     C
+        ret
+
+;==========================================================
+;extension functionalities
+;==========================================================
+        $INCLUDE(HEXLOAD.SRC)           ;IHex loader
+        $INCLUDE(ASCIIDMP.SRC)          ;ASCII dump of CRAM
+        $INCLUDE(DISASM.SRC)            ;CRAM disassembler
+
+
+;**********************************************************
+;PROGRAM DATA
+;**********************************************************
+
+
+error_offsets:
+;==========================================================
+;lookup table for uniform error messaging
+;==========================================================
+        dw      0
+        dw      txt_illegalchar         ;ERR_ILLEGALCHAR
+        dw      txt_rectype             ;ERR_RECTYP
+        dw      txt_verify              ;ERR_VERIFY
+        dw      txt_checksum            ;ERR_CHECKSUM
+        dw      txt_command             ;ERR_COMMAND
+        dw      txt_parameter           ;ERR_PARAMETER
+        dw      txt_nocode              ;ERR_NOBOOTVECT
+        dw      txt_nobootcode          ;ERR_NOBOOTCODE
+        dw      txt_wrongkick           ;ERR_WRONGKICK
+        dw      txt_regname             ;ERR_REGNAME
+
+error_count     EQU ($-error_offsets)/2
+
+txt_error:      db '??ERROR:',0
+txt_illegalchar:db 'illegal character',0
+txt_rectype:    db 'unsupported recordtype',0
+txt_verify:     db 'RAM verified incorrect',0
+txt_checksum:   db 'checksum incorrect',0
+txt_command:    db 'unknown command',0
+txt_parameter:  db 'illegal parameter',0
+txt_nocode:     db 'no code at address ',0
+txt_nobootcode: db 'bootcode overwritten',0
+txt_wrongkick:  db 'version incorrect',0
+txt_regname:    db 'unsupported register',0
+txt_unknown:    db 'system failure #',0
+txt_ready:      db CR,'ready',CR,0
+
+;==========================================================
+;system messages
+;==========================================================
+txt_warmboot:   db 'starting at ',0
+txt_memclr:     db 'clearing codememory',CR,0
+txt_bootmsg:    db 'MCB152 Kickstart v',('0'+VERSION),'.',('0'+REVISION),'c',CR,0
+
+txt_help:       db 'help     ?',CR
+                db 'clearmem C',CR
+                db 'disasm   D [start] [end]',CR
+                db 'go       G [start]',CR
+                db 'monitor  M [start] [end]',CR
+                db 'set reg  S reg value',CR
+                db 'view reg V',CR,0
+
+
+txt_makers:     db 'MCB152 designed by Walter Machiels - ON4AWM',CR
+                db 'KICKSTART coded by Joachim Elen - ON1DDS',CR,0
+                
+
+
+        ORG     KickLibrary
+;**********************************************************
+;PUBLIC ROUTINES, COPIED TO CODE-MEMORY BEFORE UPLOADING
+;**********************************************************
+        db      'KICK'
+        db      VERSION,REVISION
+        dw      txt_kickinfo
+
+;------------------
+;System routines
+;------------------
+        ljmp    WarmReboot      ;warmreboot application
+        ljmp    ColdReboot      ;coldreboot application
+        ljmp    Hang            ;hangs the processor, including interrupts
+        ljmp    FlashLED        ;Reserved00
+        ljmp    Delay           ;delay in units of 10ms
+
+        ljmp    ClearXRam       ;clear DATA memory
+        ljmp    ClearChip       ;clear CHIP memory
+
+        ljmp    ReadCRAM        ;read a byte from CRAM
+        ljmp    WriteCRAM       ;write a byte to CRAM
+        ljmp    ReadEPROM       ;read a byte from EPROM
+
+        ljmp    CopyMemXC       ;copy memory from CODE to DATA memory
+        ljmp    0               ;Reserved01 - CompareMemXC
+        ljmp    CopyMemXX       ;copy memory from DATA to DATA memory
+        ljmp    CompareMemXX    ;compare two area's in DATA memory
+        ljmp    GSCClearRFIFO   ;clear Rx-FIFO of GSC
+
+;------------------
+;LSC I/O routines
+;------------------
+        ljmp    AutoBaud        ;automatic baudrate detection
+        ljmp    OpenLSC         ;open LSC for I/O
+        ljmp    PutChar         ;write character
+        ljmp    GetChar         ;read character
+        ljmp    NewLine         ;write <CR>
+        ljmp    PutBin          ;write 8-bits as binary
+        ljmp    PutDec4         ;write 4-bits as decimal (0-16)
+        ljmp    PutDec8         ;write 8-bits as decimal (0-255)
+        ljmp    PutDec16        ;write 16-bits as decimal (0-65535)
+        ljmp    PutHex4         ;write 4-bits as hexadecimal (0-F)
+        ljmp    PutHex8         ;write 8-bits as hexadecimal (0-FF)
+        ljmp    PutHex16        ;write 16-bits as hexadecimal (0-FFFF)
+        ljmp    PutAddress      ;write address in DPTR as 16-bits (0-FFFF)
+        ljmp    PutMessage      ;write string from CODE memory
+        ljmp    PutString       ;write string from DATA memory
+
+        ljmp    GetDec4         ;read 4-bits as decimal (0-9)
+        ljmp    0               ;Reserved02
+        ljmp    GetDec16        ;read 16-bits as decimal (0-65535)
+        ljmp    GetHex4         ;read 4-bits as hexadecimal (0-F)
+        ljmp    GetHex8         ;read 8-bits as hexadecimal (0-FF)
+        ljmp    GetHex16        ;read 16-bits as hexadecimal (0-FFFF)
+        ljmp    GetString       ;read string to DATA memory
+        ljmp    WaitSilence     ;wait until charstream stops at LSC
+
+;------------------
+;String operations
+;------------------
+        ljmp    StrNull         ;erase chars from string
+        ljmp    StrLength       ;count non-null chars in string
+        ljmp    StrUpper        ;convert chars in string to uppercase
+        ljmp    StrLower        ;convert chars in string to lowercase
+        ljmp    StrCopy         ;copy sourcestring to destinationstring
+        ljmp    StrMoveLeft     ;shift string 'index' chars to left
+        ljmp    StrMoveRight    ;shift string 'index' chars to right
+        ljmp    StrCompare      ;compare 2 strings
+        ljmp    StrCompareSub   ;compare substring into mainstring
+        ljmp    StrPos          ;find substring into mainstring
+        ljmp    StrDelete       ;delete 'count' chars from 'index' in string
+        ljmp    StrConcat       ;append string to another
+        ljmp    0               ;insert substring into main string
+
+;------------------
+;Usefull Tools
+;------------------
+        ljmp    CharToUpper     ;convert char to uppercase
+        ljmp    CharToLower     ;convert char to lowercase
+        ljmp    Hex2ASCII       ;convert hexcipher to ASCII
+        ljmp    ASCII2Dec       ;convert ASCII to decimal cipher
+        ljmp    ASCII2Hex       ;convert ASCII to hexadecimal cipher
+        ljmp    AddDecCipher    ;shift base, include decimal cipher
+        ljmp    AddHexCipher    ;shift base, include hexadecimal cipher
+        ljmp    CRCInit         ;init temporary CRC-checksum
+        ljmp    CRCPass         ;include data to temporary CRC
+        ljmp    CRCFinish       ;recalculate temporary CRC to final CRC
+
+        db      0,0,0
+        db      0,0,0
+        db      0,0,0
+        db      0,0,0
+        db      0,0,0
+        db      0,0,0
+        db      0,0,0
+        db      0,0,0
+        db      0,0,0
+        db      0,0,0
+        db      0,0,0
+        db      0,0,0
+        db      0,0,0
+        db      0,0,0
+        db      0,0,0
+        db      0,0,0
+
+txt_kickinfo:
+        db      'KICK library by Joachim Elen',0
+
+        $INCLUDE(..\LIBS\IO.SRC)
+        $INCLUDE(..\LIBS\STRING.SRC)
+        $INCLUDE(..\LIBS\SYSTEM.SRC)
+        $INCLUDE(..\LIBS\TOOLS.SRC)        
+
+
+;**********************************************************
+;MCB152 - SYSTEM CODE
+;**********************************************************
+
+        ORG     ColdReboot
+;==========================================================
+;switches EPROM<->CRAM and starts at address 0
+;==========================================================
+;standard way to return to EPROM
+;----------------------------------------------------------
+        clr     A
+        push    ACC
+        push    ACC
+
+GoCRAM:
+;==========================================================
+;switches EPROM<->CRAM and pop returnsaddress from stack
+;==========================================================
+;example:
+;       pushret RESET
+;       jmp     ColdReboot
+;
+;or     pushw   DP
+;       jmp     ColdReboot
+;----------------------------------------------------------
+        cplmem
+        ret
+
+        ORG     KickID
+        db      'KICK'          ;Kickstart identifier
+        db      VERSION         ;version
+        db      REVISION        ;revision
+
+        END
+

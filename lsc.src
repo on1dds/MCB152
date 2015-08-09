@@ -1,0 +1,287 @@
+InitLSC:
+;==========================================================
+;[AL]:initialize LSC for communication with SLIP-host
+;==========================================================
+;InitLSC() is called at boot-time only. The routine
+;initializes the serial port on hardware level as well as
+;on software level.
+;----------------------------------------------------------
+
+;init LSC port (hardware protocol) 
+;---------------------------------
+       mov    TH1,#LSC_SPEED              ;set serial speed
+       mov    SCON,#01010011b             ;M1,RX enable,TI+RI set
+       setb   ES                          ;enable serial interrupt
+
+;init SLIP (software protocol)
+;-----------------------------
+       mov    TXDELAY,#30                 ;default SLIP values
+       mov    PERSISTANCE,#64
+       mov    SLOTTIME,#1
+       mov    TXTAIL,#2
+
+       clr    SF_FESC
+
+
+;init buffers
+;------------
+       %movwabs(TXBS,0)                   ;init pointers and variables
+       %movwabs(WTXF,TXBuf)
+       %movwabs(WTXD,TXBuf)
+       %movwabs(RRXF,RXBuf)
+       %movwabs(RRXD,RXBuf)
+       %movwabs(TXFL,0)
+       mov    TXFrameCount,#0
+       ret
+
+
+GetLSC:
+;==========================================================
+;[S-INT]:read SLIP-frames and store in GSC/TX-buffer
+;==========================================================
+;processes SLIP-frames in real-time and stores them as raw
+;in a TX-buffer.  GetLSC() is called every time a byte
+;drops in on the serial port.
+;----------------------------------------------------------
+       jb     RI,GL_start                 ;ONLY process when RI is set
+       reti
+
+GL_start:
+       %pushall                           ;save registers
+       push   AR0
+       push   AR1
+       push   AR2
+       push   P2
+
+       mov    A,SBUF                      ;read SLIP-byte from host
+       clr    RI                          ;indicate S-INT is intercepted
+
+       jnb    CLI_ENABLE,GL_ProcessSLIP
+       call   ReadCL                      ;commandline interpreter (AT-codes)
+       jmp    GL_done
+
+GL_ProcessSLIP:
+;----------------------------------------------------------
+;SLIP frames are being processed here.
+;----------------------------------------------------------
+       %cje(A,#FEND,GL_NewSLIP)
+       jmp    GL_ReadSLIP
+
+
+GL_NewSLIP:
+;----------------------------------------------------------
+;register frame and initialise for a new one
+;----------------------------------------------------------
+
+;close old frame
+;---------------
+       %jwz(TXFL,GLNS_done)               ;handle empty frames
+
+       %movwxc(WTXF,TXFL)                 ;push framelength
+       %addwabs(WTXF,2)                   ;skip framelength field
+       %addw(WTXF,TXFL)                   ;skip frame
+       inc    TXFrameCount                ;announce TX-frame
+       clr    EA                          ;disable interrupts
+       %addw(TXBS,TXFL)                   ;register framelength
+       setb   EA                          ;enable interrupts
+       setb   DB_TFREAD                   ;DEBUG
+
+
+;open new frame
+;--------------
+       mov    A,#HIGH TXB_sizeof-6        ;don't process if buffer is full
+       cjne   A,TXBSH,$+3
+       jc     GLNS_done
+
+;wrap TX-framebuffer
+       mov    A,WTXFH
+       cjne   A,#HIGH (TXBuf+TXB_sizeof-00800h),$+3
+       jc     GLNS_initframe
+       %movwabs(TXFL,0)                   ;indicate buffer wrapping
+       %movwxc(WTXF,TXFL)
+       %movwabs(WTXF,TXBuf)
+
+GLNS_initframe:
+       %movw(WTXD,WTXF)
+       %addwabs(WTXD,2)                   ;skip framelength field
+       %movwabs(TXFL,0)                   ;init TX frame-length
+
+GLNS_initvars:
+       mov    ATHBytePos,#0
+       clr    CLI_ATHENABLE
+       %movwabs(ATHPreTimer,8FFh)
+
+GLNS_done:
+       jmp    GL_done
+
+
+
+GL_ReadSLIP:
+;----------------------------------------------------------
+;read SLIP-data and store raw into TX-buffer
+;----------------------------------------------------------
+
+;check for ATH-string
+;--------------------
+       jnb    CLI_ATHENABLE,GLRS_GetByte
+
+       push   ACC
+       mov    A,#LOW ATHString
+       add    A,ATHBytePos
+       mov    R0,A
+       mov    P2,#HIGH ATHString
+       movx   A,@R0
+       mov    R1,A
+       pop    ACC
+
+       cjne   A,AR1,GLRS_GetByte          ;escape character ?
+       inc    ATHBytePos
+       inc    R0
+       movx   A,@R0
+       jz     GLRS_cmdmode
+       jmp    GL_Done
+
+;go in command-mode
+;------------------
+GLRS_cmdmode:
+       %movwabs(ATHPreTimer,08FFh)
+       clr    CLI_ATHENABLE               ;init for command-mode
+       mov    ATHBytePos,#0
+
+       setb   CLI_ENABLE
+       setb   CLI_SHOWOK                  ;process command line
+       jmp    GL_Done
+       jmp    GL_NewSLIP                  ;and terminate on-line mode
+
+;read slip data
+;--------------
+
+GLRS_GetByte:
+       %movwabs(ATHPreTimer,8FFh)
+       clr    CLI_ATHENABLE
+       mov    ATHBytePos,#0
+       
+       jb     SF_FESC,GLRS_FrameESC       ;process Frame ESCape chars
+       cjne   A,#FESC,GLRS_WriteRAW       ;if no FESC, write data
+       setb   SF_FESC
+       jmp    GLRS_done
+
+GLRS_FrameESC:
+       clr    SF_FESC                     ;clear FESC flag, intercepted
+
+       cjne   A,#TFEND,GLRS_HandleTFESC
+       mov    A,#FEND                     ;FESC TFEND -> FEND
+       sjmp   GLRS_WriteRAW
+
+GLRS_HandleTFESC:
+       cjne   A,#TFESC,GLRS_WriteRAW
+       mov    A,#FESC                     ;FESC TFESC -> FESC
+
+
+;write raw data
+;--------------
+GLRS_WriteRAW:
+       %movw(DP,WTXD)                     ;write next raw-byte in TXbuf
+       movx   @DPTR,A
+       inc    DPTR
+       %movw(WTXD,DP)
+       %incw(TXFL)
+
+GLRS_done:
+       ;jmp   GL_done
+
+GL_done:
+       pop    P2
+       pop    AR2                         ;load register
+       pop    AR1
+       pop    AR0
+       %popall
+       reti
+
+
+PutLSC:
+;==========================================================
+;[AL]:SLIP-encapsulate RX-data and write to host
+;==========================================================
+;PutLSC() writes valid data coming from the GSC to
+;the serial port (LSC). They are encapsulated by
+;SLIP frames of DATAFRAME type.
+;----------------------------------------------------------
+       mov    A,RXFrameCount
+       jz     PLSC_done                   ;no frame, exit
+
+PLSC_ring:
+       %movwcx(RXFL,RRXF)                 ;read framelength
+       %jwnz(RXFL,PLSC_putSLIP)           ;on 0, init buffer and reread
+       %movwabs(RRXF,RXBuf)               ;restore frame and datapointer
+       %movw(RRXD,RRXF)
+       sjmp   PLSC_ring
+
+PLSC_putSLIP:
+;----------------------------------------------------------
+;convert RX-data to SLIP and write to host
+;----------------------------------------------------------
+       %addwabs(RRXD,2)                   ;skip framelength definition
+
+;open SLIP frame
+;---------------
+       mov    A,#FEND                     ;open new SLIP-frame ...
+       call   PutChar
+
+;write data as SLIP
+;------------------
+PLSC_convert:
+       %incw(RXFL)                        ;write frame to host
+       %jwz(RXFL,PLSC_close)
+       call   PLSC_nextbyte
+       sjmp   PLSC_convert
+
+
+;close SLIP frame
+;----------------
+PLSC_close:
+       mov    A,#FEND                     ;close SLIP-Frame
+       call   PutChar
+
+
+;delete frame 
+;------------
+       %incw(RRXD)                        ;delete frame
+       %movw(RRXF,RRXD)
+       dec    RXFrameCount
+
+PLSC_done:
+       ret
+
+
+PLSC_nextbyte:
+;----------------------------------------------------------
+;convert databyte to SLIP and send to host
+;----------------------------------------------------------
+       %movw(DP,RRXD)                     ;read next byte
+       movx   A,@DPTR
+       inc    DPTR
+       %movw(RRXD,DP)
+
+;FEND -> FESC TFEND convert
+;--------------------------
+PLSC_chkFEND:
+       cjne   A,#FEND,PLSC_chkFESC
+       mov    A,#FESC
+       call   PutChar
+       mov    A,#TFEND
+       sjmp   PLSC_putbyte
+
+;FESC -> FESC TFESC convert
+;--------------------------
+PLSC_chkFESC:
+       cjne   A,#FESC,PLSC_putbyte
+       mov    A,#FESC
+       call   PutChar
+       mov    A,#TFESC
+
+;write SLIP to host
+;------------------
+PLSC_putbyte:
+       call   PutChar
+       ret

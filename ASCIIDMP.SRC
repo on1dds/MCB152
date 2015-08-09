@@ -1,0 +1,107 @@
+
+Monitor:
+;==========================================================
+;ASCII monitor
+;==========================================================
+;monitor a given area of memory
+;----------------------------------------------------------
+        
+;status recognition
+;------------------
+        jb      CLI_HELD,MON_startmon
+        clr     CLI_GOTEND
+
+;read parameters
+;---------------
+        call    Get2Params
+        jnc     MON_startmon
+        cjb     A,#SPACE,MON_break
+        mov     A,#ERR_PARAMETER
+        jmp     PrintError
+
+
+;display ASCII-dump
+;------------------
+MON_startmon:
+        clr     CLI_HELD
+        mov     R2,#16
+
+MON_loop:
+        push    AR2
+        movw    DP,cli_param1           ;show address
+        call    PutAddress
+        call    ShowData                ;for this instruction
+        call    ShowASCII
+        call    NewLine                 ;next line,
+        pop     AR2
+
+        movw    WR0,cli_param1
+        addwabs cli_param1,16
+        cwjae   AWR0,cli_param1,MON_break
+
+        jnb     RI,MON_nokey            ;read keyboard and react
+        mov     A,SBUF
+        clr     RI
+        cje     A,#SPACE,MON_held
+        cje     A,#ESC,MON_break
+
+MON_nokey:
+        jb      CLI_GOTEND,MON_gotend
+        djnz    R2,MON_loop
+        ret
+
+MON_gotend:
+        cwjb    cli_param1,cli_param2,MON_loop
+
+MON_break:
+        clr     CLI_HELD
+        clr     CLI_GOTEND
+        ret
+
+MON_held:
+        setb    CLI_HELD
+        ret
+
+ShowData:
+        mov     A,#' '
+        call    PutChar
+        pushw   DP
+        mov     R2,#16
+SD_loop:movx    A,@DPTR
+        inc     DPTR
+        call    PutHex8
+        cjne    R2,#9,SD_nmin
+        mov     A,#'-'
+        sjmp    SD_min
+SD_nmin:mov     A,#' '
+SD_min: call    PutChar
+        djnz    R2,SD_loop
+        popw    DP
+        ret
+
+
+ShowASCII:
+        pushw   DP
+        mov     A,#''''
+        call    PutChar
+
+        mov     R2,#16
+SA_loop:cjne    R2,#8,SA_nomin
+        mov     A,#'-'
+        call    PutChar
+
+SA_nomin:
+        movx    A,@DPTR
+        inc     DPTR
+        cjae    A,#20h-1,SA_showchar
+        mov     A,#'.'
+SA_showchar:
+        call    PutChar
+        djnz    R2,SA_loop
+
+        mov     A,#''''
+        call    PutChar
+        popw    DP
+        ret
+
+

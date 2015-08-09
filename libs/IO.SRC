@@ -1,0 +1,621 @@
+OpenLSC:
+;==========================================================
+;Open LSC port for input/output
+;==========================================================
+;INPUT:         A = baudrate
+;BEWARE:All I/O on LSC uses Timer 1
+;----------------------------------------------------------
+        clr     TR1
+        mov     TH1,A
+        mov     TL1,A
+        mov     TMOD,#21h
+        mov     PCON,#80h
+        mov     SCON,#52h
+        setb    TR1
+
+        clr     C
+        ret
+
+
+AutoBaud:
+;==========================================================
+;automatically detect LSC baudrate
+;==========================================================
+;OUTPUT:        baudrate value for TH0
+;NOTE:AutoBaud() will only work correctly when within the
+;first 3 edges (including startbit) a single bittime occured
+;during AutoBaud(), interrupts are disabled
+;----------------------------------------------------------
+        jnz     OpenLSC
+
+        pushregs
+        push    IE
+        clr     EA
+
+        mov     A,#20
+        call    Delay
+
+AB_restore:
+        mov     TMOD,#11h       ;init Timer 1 in 16-bit mode
+        mov     TCON,#00h
+        movwabs T1,0
+        setb    RXD             ;enable RXD as input
+        jb      RXD,$           ;Wait for start bit
+        movw    WR0,T1          ;delay to trigger with other samples
+
+;take sample 1
+;-------------
+        movwabs T1,13
+        setb    TR1
+        jb      TF1,AB_restore  ;restart on timer overflow.
+        jnb     RXD,$-2         ;wait for rising edge
+        clr     TR1
+        movw    WR0,T1
+
+;take sample 2
+;-------------
+        movwabs T1,13
+        setb    TR1
+        jb      TF1,AB_restore  ;restart on timer overflow.
+        jb      RXD,$-2         ;wait for falling edge
+        clr     TR1
+        movw    WR1,T1
+
+;take sample 3
+;-------------
+        movwabs T1,13
+        setb    TR1
+        jb      TF1,AB_restore  ;restart on timer overflow.
+        jnb     RXD,$-2         ;wait for rising edge
+        clr     TR1
+        movw    WR2,T1
+
+;find sum of sampletimes
+;-----------------------
+        movw    WR3,T1
+        addw    WR3,AWR1
+        addw    WR3,AWR0
+
+;filter smallest sampletime
+;--------------------------
+        cwjb    WR0,AWR2,AB_cpb
+        movw    WR0,AWR2
+AB_cpb: cwjb    WR0,AWR1,AB_calcbyte
+        movw    WR0,AWR1
+
+;calculate duration of 8 bittimes
+;--------------------------------
+AB_calcbyte:                    ;<<< BITPOSITIONS >>>
+        mov     A,WR0L          ;FEDC BA98  7654 3210
+        anl     A,#0F0h         ;FEDC BA98  7654 ----
+        mov     R0,#1
+        xchd    A,@R0           ;FEDC ----  7654 BA98
+        swap    A               ;FEDC ----  BA98 7654
+        mov     R5,A            ;save for OpenLSC()
+        clr     C
+        rrc     A               ;FEDC ----  -BA9 8765 c=4
+        xch     A,WR0H          ;-BA9 8765  FEDC ----
+        swap    A               ;-BA9 8765  ---- FEDC
+        rrc     A               ;-BA9 8765 c4--- -FED
+        anl     A,#11111000b    ;-BA9 8765  4--- ----
+        mov     WR0L,A          ;WR0=8 bittimes
+
+;delay 8 bittimes-samples
+;------------------------
+        subw    WR3,AWR0        ;samples - 8bittimes
+        movw    T1,AWR3
+        mov     A,T1H
+        jnb     ACC.7,AB_openlsc
+
+        mov     TCON,#40h       ;start timer 1
+        jnb     TF1,$           ;wait for timer overflow
+        mov     TCON,#00h       ;stop timer 1
+        jnb     RXD,$-2         ;wait for rising edge
+
+;open serial port
+;----------------
+AB_openlsc:
+        mov     A,R5
+        cpl     A
+        inc     A
+        jz      AB_err
+        call    OpenLSC
+
+        pop     IE
+        popregs
+        ret
+
+AB_err: jmp     AB_restore
+
+
+WaitSilence:
+;==========================================================
+;Wait for the LSC to become idle
+;==========================================================
+;BEWARE:routine uses Timer 0
+;----------------------------------------------------------
+        anl     TCON,#11001100b ;stop timer 0
+        anl     TMOD,#11110000b ;set timer mode
+        orl     TMOD,#00000001b
+        movwabs T0,8000h        ;initiate timer value
+        setb    TR0             ;start timer.
+
+WS_delay:
+        jb      TF0,WS_done
+        jnb     RI,WS_delay     ;wait for char
+        clr     RI
+        mov     A,SBUF          ;read char from buffer
+        clr     C
+        sjmp    WaitSilence
+
+WS_done:
+        clr     TR0
+        clr     TF0
+        ret
+
+
+PutChar:
+;==========================================================
+;write one character
+;==========================================================
+;INPUT:         A = output char
+;----------------------------------------------------------
+        jnb     TI,$            ;wait for empty TX buffer
+        clr     TI              
+        mov     SBUF,A          ;write char to buffer
+        clr     C
+        ret
+
+
+GetChar:
+;==========================================================
+;read one character from the serial I/O port
+;==========================================================
+;OUTPUT:        A = char received
+;----------------------------------------------------------
+        jnb     RI,$            ;wait for char
+        mov     A,SBUF          ;read char from buffer
+        clr     RI
+        jnb     F0,gch_noecho
+        call    PutChar
+gch_noecho:
+        clr     C
+        ret
+
+PutHex4:
+;==========================================================
+;hex-write 4 low-bits of parameter
+;==========================================================
+;INPUT:         A[3-0]  = lownibble to hex-write
+;----------------------------------------------------------
+        push    ACC
+        call    Hex2ASCII
+        call    PutChar
+        pop     ACC
+        clr     C
+        ret
+
+PutHex8:
+;==========================================================
+;hex-write 8 bits
+;==========================================================
+;INPUT:         A = byte to hex-write
+;----------------------------------------------------------
+        swap    A
+        call    PutHex4
+        swap    A
+        call    PutHex4
+        clr     C
+        ret
+
+PutHex16:
+;==========================================================
+;hex-write 16 bits
+;==========================================================
+;INPUT:         ACCL = low byte
+;               ACCH = high byte
+;----------------------------------------------------------
+        xch     A,B
+        call    PutHex8
+        xch     A,B
+        call    PutHex8
+        clr     C
+        ret
+
+PutDec4:
+;==========================================================
+;dec-write 4 low-bits of parameter
+;==========================================================
+;INPUT:         A[3-0]  = lownibble to dec-write
+;----------------------------------------------------------
+        push    ACC
+        anl     A,#1111b
+        clr     C
+        da      A
+        jc      pd4_1
+        add     A,#'0'
+        call    PutChar
+pd4_1:  pop     ACC
+        clr     C
+        ret
+
+PutDec8:
+;==========================================================
+;dec-write byte
+;==========================================================
+;INPUT:         A = hex-number to print
+;------------------ ----------------------------------------
+        push    ACC
+        push    AR0
+        push    B
+        mov     R0,#0
+pd8_decdiv:
+        mov     B,#10
+        div     AB
+        push    B
+        inc     R0
+        jnz     pd8_decdiv    
+
+pd8_emptystack:
+        pop     B
+        mov     A,B
+        add     A,#'0'
+        call    PutChar
+        djnz    R0,pd8_emptystack
+        pop     B
+        pop     AR0
+        pop     ACC
+        clr     C
+        ret
+
+PutDec16:          
+;==========================================================
+;print a 16-bit value as hexadecimal
+;==========================================================
+;INPUT:         A = low byte
+;               B = high byte
+;----------------------------------------------------------
+        pushstate
+        pushw   AWR0
+        pushw   AWR1
+        push    AR4
+        push    B
+
+        movw    WR0,ACC                 ;copy input to work register
+        setb    F0
+        mov     B,#0
+        mov     DPTR,#pd16_tab
+
+pd16_nxtbase:
+        movwc   WR1                     ;pick base (1,10,100,1000...)
+        addwabs DP,2
+        cwjz    AWR1,pd16_done          ;exit on last base
+
+        mov     R4,#0                   ;clear digitcounter
+        clr     C
+pd16_getdigit:
+        inc     R4
+        subbw   WR0,WR1
+        jnc     pd16_getdigit
+        dec     R4                      ;undo the operation that caused
+        addw    WR0,WR1                 ;the underflow.
+        cjne    R4,#0,pd16_print
+        jb      F0,pd16_nxtbase
+
+pd16_print:
+        clr     F0
+        mov     A,R4
+        call    PutHex4
+        clr     A
+        inc     B
+        sjmp    pd16_nxtbase
+
+pd16_done:
+        mov     A,B
+        jnz     pd16_exit
+        clr     A
+        call    PutHex4
+        mov     A,#1
+pd16_exit:
+        pop     B
+        pop     AR4
+        popw    AWR1
+        popw    AWR0
+        popstate
+        clr     C
+        ret
+
+pd16_tab: dw 10000,1000,100,10,1,0
+
+NewLine:
+;==========================================================
+;print <CR>
+;==========================================================
+        push    ACC
+        mov     A,#CR
+        call    PutChar
+        pop     ACC
+        ret
+
+
+PutBin:
+;==========================================================
+;print value as binary
+;==========================================================
+;INPUT:         ACC = number to print
+;----------------------------------------------------------
+        push    ACC
+        push    AR0
+        mov     R0,#8
+        mov     B,A
+pb_bitroll:
+        mov     A,B
+        rlc     A
+        mov     B,A
+
+        clr     A
+        addc    A,#'0'
+        call    PutChar
+        djnz    R0,pb_bitroll
+        pop     AR0
+        pop     ACC
+        ret
+
+
+
+PutAddress:
+;==========================================================
+;print an address
+;==========================================================
+;INPUT:        DPTR  = address to show
+;----------------------------------------------------------
+        push    ACC
+        mov     A,DPH
+        call    PutHex8
+        mov     A,DPL
+        call    PutHex8
+        pop     ACC
+        ret
+
+
+
+GetHex4:
+;==========================================================
+;read a cipher from the input channel
+;==========================================================
+;OUTPUT:      ACC    = result cipher
+;----------------------------------------------------------
+        call    GetChar
+        push    ACC
+        call    ASCII2Hex
+        jc      gdc_error
+        dec     SP
+        clr     C
+        ret
+
+ghc_error:
+        setb    C
+        pop     ACC
+        ret
+
+GetHex8:
+;==========================================================
+;get an 8-bit value as hexadecimal
+;==========================================================
+;OUTPUT:R0      = val  = number to print
+;       ACC     = char = key pressed to leave
+;----------------------------------------------------------
+        clr     A
+        mov     R0,A
+
+GH8_firstdigit:
+        call    GetHex4
+        jnc     GH8_nextok
+        cjne    A,#SPACE,GH8_error
+        sjmp    GH8_firstdigit
+
+GH8_nextok:
+        call    GH8_AddCipher
+        jc      GH8_error
+
+GH8_nextdigit:
+        call    GetHex4
+        jnc     GH8_nextok
+        cje     A,#SPACE,GH8_done
+        cje     A,#CR,GH8_done
+
+GH8_error:
+        setb    C
+        ret
+
+GH8_done:
+        clr     C
+        ret
+
+GH8_AddCipher:
+        cjae    A,#10h,GH8ac_error
+        cjae    R0,#10h,GH8ac_error
+        push    B
+        mov     B,A
+        mov     A,R0
+        swap    A
+        orl     A,B
+        mov     R0,A
+        pop     B
+
+GH8ac_done:
+        clr     C
+        clr     A
+        ret
+
+GH8ac_error:
+        setb    C
+        ret
+
+
+GetHex16:
+;==========================================================
+;get a 16-bit value as hexadecimal
+;==========================================================
+;OUTPUT:      AR0    = low byte
+;             AR1    = high byte
+;----------------------------------------------------------
+        movwabs WR0,0
+        clr     A
+
+gh16_firstdigit:
+        call    GetHex4
+        jnc     gh16_nextok
+        cjne    A,#SPACE,gh16_error
+        sjmp    gh16_firstdigit
+
+gh16_nextok:
+        call    AddHexCipher
+        jc      gh16_error
+
+gh16_nextdigit:
+        call    GetHex4
+        jnc     gh16_nextok
+        cje     A,#SPACE,gh16_done
+        cje     A,#CR,gh16_done
+
+gh16_error:
+        setb    C
+        ret
+
+gh16_done:
+        clr     C
+        ret
+
+
+GetDec4:
+;==========================================================
+;read a cipher from the input channel
+;==========================================================
+;OUTPUT:      ACC    = result cipher
+;----------------------------------------------------------
+        call    GetChar
+        push    ACC
+        call    ASCII2Dec
+        jc      gdc_error
+        dec     SP
+        ret
+
+gdc_error:
+        setb    C
+        pop     ACC
+        ret
+
+GetDec16:
+;==========================================================
+;get a 16-bit value as decimal
+;==========================================================
+;OUTPUT:      AR0    = low byte
+;             AR1    = high byte
+;----------------------------------------------------------
+        push    ACC
+        movwabs WR0,0
+
+gd16_nextdigit:
+        call    GetDec4
+        jc      gd16_leave
+        call    AddDecCipher
+        jc      gd16_error
+        sjmp    gd16_nextdigit
+
+gd16_leave:
+        jnz     gd16_error
+
+gd16_done:
+        clr     C
+        pop     ACC
+        ret
+
+gd16_error:
+        setb    C
+        pop     ACC
+        ret
+
+
+
+PutMessage:
+;==========================================================
+;print string from CRAM
+;==========================================================
+;INPUT:        DPTR   = string to print (CRAM)
+;----------------------------------------------------------
+        push    ACC
+pm_wchar:
+        clr     A
+        movc    A,@A+DPTR     ;get character
+        jz      pm_done
+        inc     DPTR
+        call    PutChar
+        sjmp    pm_wchar
+pm_done:
+        pop     ACC
+        ret
+
+
+PutString:
+;==========================================================
+;print string from XRAM
+;==========================================================
+;INPUT:         DPTR    = string to print (XRAM)
+;----------------------------------------------------------
+        push    ACC
+ps_wchar:
+        movx    A,@DPTR        ;get character
+        jz      ps_done
+        inc     DPTR
+        call    PutChar
+        sjmp    ps_wchar
+ps_done:
+        pop     ACC
+        ret
+
+GetString:
+;==========================================================
+;read a string from serial I/O port
+;==========================================================
+;INPUT: DPTR    = pointer to reserved memory
+;       AR0     = max. stringsize
+;----------------------------------------------------------
+        push    AR1
+        mov     R1,0
+gs_start:
+        call    GetChar
+        cjne    A,#08,gs_0
+        cjne    R1,#0,gs_delchar
+        sjmp    gs_start
+gs_delchar:
+        mov     A,DPH
+        dec     R1
+        dec     DPL
+        subb    A,#0
+        mov     DPH,A
+        mov     A,#08
+        call    PutChar
+        sjmp    gs_start
+        
+gs_0:   cjne    A,#13,gs_1
+        sjmp    gs_gotstring
+gs_1:   cjne    R0,#0,gs_2
+        sjmp    gs_buffull
+gs_2:   movx    @DPTR,A
+        call    PutChar
+        inc     DPTR
+        inc     R1
+        djnz    R0,gs_start
+gs_buffull:
+        mov     A,#07
+        call    PutChar
+        sjmp    gs_start    
+gs_gotstring:
+        clr     A
+        movx    @DPTR,A
+        pop     AR1
+        ret
+
+
+

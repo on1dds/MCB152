@@ -1,0 +1,170 @@
+;------ register usage
+
+adresh  EQU R3
+adresl  EQU R4
+chksum  EQU R6
+dcount  EQU R7
+
+
+IHexLoader:
+;==========================================================
+;IntelHEX application loader
+;==========================================================
+;LoadIHex() reads one line of IntelHEX data and stores
+;it in data memory. Junk behind a valid line of IHex is
+;ignored until a CR or NUL is detected. Beware that even
+;thought an error occures, valid data were written
+;to external data memory
+;----------------------------------------------------------
+        clr     A
+        mov     chksum,A
+        mov     ihl_status,A
+        mov     ihl_errors,A
+        clr     F0
+
+IHL_getcharcount:
+;----------------------------
+;read number of databytes
+;----------------------------
+        call    ReadHex
+        jc      IHL_schxerr
+        mov     dcount,A
+
+IHL_getstartaddress:
+;----------------------------
+;read startaddress in RAM
+;----------------------------
+        call    ReadHex
+        jc      IHL_schxerr
+        mov     adresh,A
+        call    ReadHex
+        jc      IHL_schxerr
+        mov     adresl,A
+        movw    cli_param1,adres
+
+IHL_getrecordtype:
+;----------------------------
+;get recordtype
+;----------------------------
+        call    ReadHex
+        jc      IHL_schxerr
+        cje     A,#IH_DATA,IHL_databytes
+        cje     A,#IH_EOF ,IHL_endoffile
+        setb    IHLERR_RECTYPE
+        jmp     IHL_error
+
+IHL_schxerr:
+;- - - - - - - - - - - - - -
+;illegal character handler
+;- - - - - - - - - - - - - -
+        setb    IHLERR_ILLEGAL
+        jmp     IHL_error
+
+IHL_endoffile:
+        setb    IHLSTAT_EOF
+
+IHL_databytes:
+;----------------------------
+;store databytes
+;----------------------------
+        mov     A,dcount
+        jz      IHL_checksum
+        movw    DP,adres
+
+IHL_storedata:     
+        call    ReadHex
+        jc      IHL_schxerr
+                
+        mov     B,A                             ;write RAM and verify
+        movx    @DPTR,A
+        movx    A,@DPTR
+        cjne    A,B,IHL_xwriterr
+                
+IHL_dskip:
+        inc     DPTR                            ;increment address
+        djnz    dcount,IHL_storedata
+        sjmp    IHL_checksum
+
+IHL_xwriterr:
+        setb    IHLERR_VERIFY
+        jmp     IHL_error
+
+IHL_checksum:
+;----------------------------
+;calculate linechecksum
+;----------------------------
+        call    ReadHex
+        jc      IHL_schxerr
+        mov     A,chksum
+        jz      IHL_closeline
+        setb    IHLERR_CHECKSUM
+        sjmp    IHL_error
+
+IHL_closeline:
+;----------------------------
+;close line, leave loader
+;----------------------------
+        jb      IHLSTAT_EOF,IHL_eofboot
+        setb    CLI_NOPROMPT
+        ret
+
+IHL_eofboot:
+;==========================================================
+;warmboot to the address in the IH_EOF record
+;==========================================================
+        clr     CLI_NOPROMPT
+        jmp     Execute
+
+
+IHL_error:
+;==========================================================
+;print errorcode to the host
+;==========================================================
+        mov     A,#ERR_ILLEGALCHAR              ;illegal character
+        jbc     IHLERR_ILLEGAL,IHLpe_putmessage
+
+        mov     A,#ERR_RECTYPE                  ;unsupported record type
+        jbc     IHLERR_RECTYPE,IHLpe_putmessage
+
+        mov     A,#ERR_VERIFY                   ;RAM-verify failed
+        jbc     IHLERR_VERIFY,IHLpe_putmessage
+
+        mov     A,#ERR_CHECKSUM                 ;checksum error
+        jbc     IHLERR_CHECKSUM,IHLpe_putmessage
+
+        mov     A,#ERR_IHEXFAIL                 ;unknown error
+
+IHLpe_putmessage:
+        call    PrintError
+        call    WaitSilence
+        clr     CLI_NOPROMPT
+        ret
+
+ReadHex:
+;==========================================================
+;read value as hexadecimal
+;==========================================================
+;A     = val  = number to print
+;----------------------------------------------------------
+        push    B
+
+        call    GetHex4
+        jc      GH_fail
+        swap    A
+        mov     B,A                  ;store hi-nibble
+
+        call    GetHex4
+        jc      GH_fail
+        orl     A,B                  ;merge hi- and low-byte
+                
+GH_done:xch     A,chksum
+        add     A,chksum
+        xch     A,chksum
+        
+        clr     C
+GH_fail:pop     B
+        ret
+
+
+
+

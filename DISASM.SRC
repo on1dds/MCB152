@@ -1,0 +1,1437 @@
+;Disasm() disassembles code stored into XDATA-memory. This is done in steps
+;of 24 instruction lines.
+;
+
+;instruction parameters encoding
+
+ED_VOID     EQU 0  SHL 4
+ED_ACC      EQU 1  SHL 4
+ED_REG      EQU 2  SHL 4
+ED_BIT      EQU 3  SHL 4 
+ED_NBIT     EQU 4  SHL 4  
+ED_BYTE     EQU 5  SHL 4  
+ED_ABS      EQU 6  SHL 4
+ED_SJMP     EQU 7  SHL 4
+ED_DPTR     EQU 8  SHL 4
+ED_ATDPTR   EQU 9  SHL 4
+ED_ATAPTR   EQU 10 SHL 4
+ED_ATREG    EQU 11 SHL 4
+ED_BITC     EQU 12 SHL 4
+ED_AJMP     EQU 13 SHL 4
+ED_LJMP     EQU 14 SHL 4
+ED_AB       EQU 15 SHL 4
+
+ES_VOID     EQU 0  SHL 0
+ES_ACC      EQU 1  SHL 0
+ES_REG      EQU 2  SHL 0
+ES_BIT      EQU 3  SHL 0
+ES_NBIT     EQU 4  SHL 0
+ES_BYTE     EQU 5  SHL 0
+ES_ABS      EQU 6  SHL 0
+ES_SJMP     EQU 7  SHL 0
+ES_ABSJMP   EQU 8  SHL 0
+ES_ATDPTR   EQU 9  SHL 0
+ES_ATAPTR   EQU 10 SHL 0
+ES_ATAPC    EQU 11 SHL 0
+ES_BITC     EQU 12 SHL 0
+ES_BYTEJMP  EQU 13 SHL 0
+ES_ATREG    EQU 14 SHL 0
+ES_LABS     EQU 15 SHL 0
+
+
+Disasm:
+;==========================================================
+;Disassembler
+;==========================================================
+;Disassemble a given area of memory
+;----------------------------------------------------------
+
+;status recognition
+;------------------
+        jb      CLI_HELD,DAS_startdisasm
+        clr     CLI_GOTEND
+
+;read parameters
+;---------------
+        call    Get2Params
+        jnc     DAS_startdisasm
+        cjb     A,#SPACE,DAS_done
+        mov     A,#ERR_PARAMETER
+        jmp     PrintError
+          
+;display ASCII-dump
+;------------------
+DAS_startdisasm:
+        clr     CLI_HELD
+        mov     R2,#22
+
+DAS_loop:
+        push    AR2
+        movw    DP,cli_param1                    ;show address
+        call    PutAddress
+        call    ShowMCode                        ;for this instruction
+        call    ShowMnemonic 
+        call    ShowOpCode
+        call    NewLine                          ;next line,
+        call    UAS_skipinstruction              ;next instruction.
+        pop     AR2
+
+        jnb     RI,DAS_nokey
+        mov     A,SBUF                           ;read char from buffer
+        clr     RI
+        cjne    A,#SPACE,DAS_nokey
+        setb    CLI_HELD
+        ret
+
+DAS_nokey:
+        jnb     CLI_GOTEND,DAS_1param
+        cwjb    cli_param1,cli_param2,DAS_loop
+        sjmp    DAS_done
+
+DAS_1param:
+        djnz    R2,DAS_loop
+
+DAS_done:
+        clr     CLI_GOTEND
+        clr     CLI_HELD
+        ret
+
+PrintReg:
+        push    ACC
+        movc    A,@A+DPTR
+        jbc     ACC.7,PR_done
+        call    PutChar
+        pop     ACC
+        inc     A
+        sjmp    PrintReg
+
+
+PR_done:call    PutChar
+        pop     ACC
+        ret
+
+
+
+
+ShowMnemonic:
+;==========================================================
+;Shows instruction mnemonic
+;==========================================================
+        pushw   DP
+        getxdata
+        mov     R5,#1
+        mov     R0,A
+        mov     R4,A                 ;save machinecode instruction
+
+        anl     A,#0F0h              ;construct search offset 
+        rr      A
+        push    ACC
+        mov     A,R0
+        mov     C,ACC.3
+        jc      SM_reginstr
+        anl     A,#0Fh
+        cjne    A,#7,SM_not7
+        dec     A
+SM_not7:anl     A,#7
+        sjmp    SM_cont
+SM_reginstr:
+        mov     A,#7
+SM_cont:pop     AR0
+        orl     A,R0
+        mov     R3,A                 ;save tableoffset (see ShowOpCode)
+
+        mov     DPTR,#Instr_pointers ;print instruction
+        movc    A,@A+DPTR
+        mov     R0,#7
+        mov     DPTR,#mn_strings
+
+SM_print:
+        push    ACC
+        movc    A,@A+DPTR
+        jnb     ACC.7,SM_printchar
+        clr     ACC.7
+        call    PutChar
+        sjmp    SM_done
+
+SM_printchar:
+        call    PutChar
+        pop     ACC
+        dec     R0
+        inc     A 
+        sjmp    SM_print
+
+SM_done:
+        pop     ACC
+        mov     A,#' '
+
+SM_align:
+        call    PutChar
+        djnz    R0,SM_align
+        popw    DP
+        ret
+
+ShowOpCode:
+;==========================================================
+;Shows instructions opcode
+;==========================================================
+        mov     DPTR,#Opcode_table   ;read opcode-definition for current
+        mov     A,R3                 ;machinecode instruction
+        movc    A,@A+DPTR
+        push    ACC
+
+SO_showdest:
+        mov     R0,A                 ;setup returnaddress
+        pushret SO_showsrc
+        mov     A,R0
+
+        swap    A                    ;jump to destination definition
+        anl     A,#0Fh
+        jz      SO_showsrc0
+        rl      A
+        mov     DPTR,#ocdest_pointers
+        jmp     @A+DPTR
+
+SO_showsrc0:
+        pop     ACC
+        pop     ACC
+
+SO_showsrc:
+        pop     ACC
+        anl     A,#0Fh
+        jz      SO_done
+        mov     R0,A
+        mov     A,#','               ;multiple opcodes, separate by comma
+        call    PutChar
+        mov     A,R0
+        rl      A
+        mov     DPTR,#ocsrc_pointers
+        jmp     @A+DPTR  
+
+SO_void:
+;==========================================================
+;do nothing
+;==========================================================
+SO_done:ret
+
+
+SO_acc:
+;==========================================================
+;show accumulator
+;==========================================================
+        mov     A,#'A'               ;print A from Accumulator
+        jmp     PutChar
+
+       
+SO_atreg:
+;==========================================================
+;shows @register
+;==========================================================
+        mov     A,#'@'               ;print @Rx
+        call    PutChar
+        mov     A,R4
+        anl     A,#1
+        mov     R4,A
+
+SO_reg:
+;==========================================================
+;show register
+;==========================================================
+        mov     A,#'R'               ;print Rx
+        call    PutChar
+        mov     A,R4
+        anl     A,#7
+        jmp     PutHex4
+
+SO_labs:
+;==========================================================
+;show absolute offset address
+;==========================================================
+        call    SO_abs
+SO_printnextbyte:
+        call    UAS_getnextbyte
+        jmp     PutHex8
+
+SO_abs:
+;==========================================================
+;show absolute data
+;==========================================================
+        mov     A,#'#'               ;print #
+        call    PutChar
+        jmp     SO_printnextbyte
+
+SO_ljmp:
+;==========================================================
+;show long jump address
+;==========================================================
+        pushret SO_printnextbyte
+        jmp     SO_printnextbyte
+
+SO_bitc:
+;==========================================================
+;show C bit address
+;==========================================================
+        mov     A,#'C'               ;print C from CARRY-flag
+        jmp     PutChar
+
+SO_ab:
+;==========================================================
+;show AB registers
+;==========================================================
+        mov     DPTR,#txt_ab
+        jmp     PutMessage              ;print AB from DIV and MUL
+
+txt_ab: db 'AB',0
+
+SO_ataptr:
+;==========================================================
+;show @A+DPTR
+;==========================================================
+        mov     DPTR,#txt_ataplus       ;print @A+DPTR
+        call    PutMessage
+        sjmp    SO_dptr
+
+txt_ataplus:    db '@A+',0
+
+
+SO_atdptr:
+;==========================================================
+;show @DPTR
+;==========================================================
+       mov    A,#'@'                    ;print @DPTR
+       call   PutChar
+
+SO_dptr:
+;==========================================================
+;show DPTR
+;==========================================================
+        mov     DPTR,#txt_dptr
+        jmp     PutMessage
+
+txt_dptr:       db 'DPTR',0
+
+SO_atapc:
+;==========================================================
+;show @A+PC
+;==========================================================
+        mov     DPTR,#txt_atapc         ;print @A+PC
+        jmp     PutMessage
+
+txt_atapc:      db '@A+PC',0
+
+
+SO_nbit:
+;==========================================================
+;show /bitaddress
+;==========================================================
+        mov     A,#'/'               ;print /bitaddress
+        call    PutChar
+
+SO_bit:
+;==========================================================
+;show bitaddress
+;==========================================================
+        call    UAS_getnextbyte
+        mov     R0,A
+        jb      ACC.7,SOB_SFRbit
+        mov     B,#8
+        div     AB
+        add     A,#020h
+        sjmp    SOB_ShowAddr
+
+SOB_SFRbit:
+        mov     C,ACC.3
+        mov     F0,C
+        mov     B,A
+        anl     A,#00000111b
+        xch     A,B
+        anl     A,#01110000b
+        rr      A
+        orl     A,B
+        jnb     F0,SOB_SFRbitlo8
+
+SOB_SFRbithi8:
+        mov     DPTR,#bitname_pointers1
+        movc    A,@A+DPTR
+        mov     DPTR,#bit_strings1
+        sjmp    SOB_SFRshow
+
+SOB_SFRbitlo8:
+        mov     DPTR,#bitname_pointers2
+        movc    A,@A+DPTR
+        mov     DPTR,#bit_strings2
+
+SOB_SFRshow:
+        jz      SOB_SFRbitaddr
+        jmp     PrintReg
+
+
+SOB_SFRbitaddr:
+        mov     A,R0
+        clr     ACC.7
+        mov     B,#8
+        div     AB
+        rl      A
+        rl      A
+        rl      A
+        add     A,#080h
+
+SOB_ShowAddr:
+        call    SBA_show 
+        mov     A,#'.'
+        call    PutChar
+        mov     A,B
+        anl     A,#7
+        jmp     PutHex4
+
+SO_ajmp:jmp     SO_ajmpfillin
+SO_byte:jmp     SO_bytefillin
+
+ocdest_pointers:
+        ajmp    SO_void
+        ajmp    SO_acc
+        ajmp    SO_reg
+        ajmp    SO_bit
+        ajmp    SO_nbit
+        ajmp    SO_byte
+        ajmp    SO_abs
+        ajmp    SO_sjmp
+        ajmp    SO_dptr
+        ajmp    SO_atdptr
+        ajmp    SO_ataptr
+        ajmp    SO_atreg
+        ajmp    SO_bitc
+        ajmp    SO_ajmp
+        ajmp    SO_ljmp
+        ajmp    SO_ab
+
+ocsrc_pointers:
+        ajmp    SO_void
+        ajmp    SO_acc
+        ajmp    SO_reg
+        ajmp    SO_bit
+        ajmp    SO_nbit
+        ajmp    SO_byte
+        ajmp    SO_abs
+        ajmp    SO_sjmp
+        ajmp    SO_absjmp
+        ajmp    SO_atdptr
+        ajmp    SO_ataptr
+        ajmp    SO_atapc
+        ajmp    SO_bitc
+        ajmp    SO_bytejmp
+        ajmp    SO_atreg
+        ajmp    SO_labs
+
+
+
+SO_bytejmp:
+;==========================================================
+;show xx,relative jump
+;==========================================================
+        call    SO_byte              ;show byte,rel. address
+        sjmp    SO_printcomma
+
+SO_absjmp:
+;==========================================================
+;show #xx,relative jump
+;==========================================================
+        call    SO_abs               ;show #data,rel. address
+SO_printcomma:
+        mov     A,#','
+        call    PutChar
+
+SO_sjmp:
+;==========================================================
+;show relative address
+;==========================================================
+        call    UAS_getnextbyte
+        mov     DPL,A
+        mov     DPH,#0
+        jnb     ACC.7,SICJNE_posaddr
+        mov     DPH,#0FFh
+SICJNE_posaddr:
+        addw    DP,cli_param1
+        call    UAS_getsize
+        mov     R0,A
+        addwb   DP,R0
+        jmp     PutAddress
+
+SO_ajmpfillin:
+;==========================================================
+;show 11-bit relative jump or call
+;==========================================================
+        call    UAS_getnextbyte
+        mov     R1,A
+        movw    DP,cli_param1
+        addwabs DP,2              ;PC+2
+        mov     DPL,AR1              ;store lowbyte from machinecode parameter
+        mov     A,DPH                ;extract 5 high order bits from PC+2
+        anl     A,#011111000b
+        mov     R0,A
+        mov     A,R4                 ;extract 3 high order bits from
+        anl     A,#011100000b        ;instruction and concatenate with previous
+        swap    A
+        rr      A
+        orl     A,R0
+        mov     DPH,A
+        jmp     PutAddress
+
+
+SO_bytefillin:
+;==========================================================
+;show on-chip address
+;==========================================================
+        call    UAS_getnextbyte                  ;read byte
+
+SBA_show:
+        mov     R0,A
+
+        jb      ACC.7,SBA_findsfr       ;<80h, no SFR
+        cjb     A,#8,SBAprint_reg
+        jmp     PutHex8
+
+SBAprint_reg:
+        mov     DPTR,#txt_ar
+        call    PutMessage
+        jmp     PutHex4
+
+txt_ar: db 'AR',0
+
+
+SBA_findsfr:
+        mov     DPTR,#reg_pcon          ;PCON is an exception to the rule
+        lcje    A,#PCON,PrintReg
+
+        anl     A,#07h                  ;filter 3 low-bits 
+        cje     A,#00h,SBAprint_bsfr    ;000 ? bit addressable SFR
+        cje     A,#01h,SBAprint_ssfr    ;001 ? perhaps shifted SFRs ?
+        lcje    A,#06h,SBAprint_value   ;110 ? unnamed
+        lcje    A,#07h,SBAprint_value   ;111 ? unnamed
+
+        mov     A,R0
+        anl     A,#011111000b
+        cje     A,#088h,SBAprint_gt8x
+        mov     A,R0
+        jb      ACC.3,SBAprint_value    ;if >=8, then apart regs.
+
+SBAprint_sfr2to5:
+;-------------------------
+;print SFR x2-x5
+;-------------------------
+        mov     DPTR,#Regname_Pointers0
+
+        mov     A,R0
+        anl     A,#1110000b
+        rr      A
+        rr      A
+        mov     B,A
+        mov     A,R0
+        dec     A
+        dec     A
+        anl     A,#011b
+        orl     A,B
+
+        movc    A,@A+DPTR
+        mov     DPTR,#reg_strings0
+        jmp     PrintReg
+
+SBAprint_bsfr:
+;-------------------------
+;print bit addressable SFR
+;-------------------------
+        mov     DPTR,#Regname_Pointers1
+        mov     A,R0
+        rr      A
+        rr      A
+        rr      A
+        anl     A,#1111b
+        movc    A,@A+DPTR
+        mov     DPTR,#reg_strings1
+        jmp     PrintReg
+
+SBAprint_gt8x:
+;-------------------------
+;print SFR 8x with x>A
+;-------------------------
+        mov     DPTR,#Regname_Pointers2
+        mov     A,R0
+        dec     A
+        dec     A
+        anl     A,#11b
+        movc    A,@A+DPTR
+        mov     DPTR,#reg_strings2
+        jmp     PrintReg
+
+SBAprint_ssfr:
+;-------------------------
+;print shifted SFR
+;-------------------------
+        mov     DPTR,#Regname_Pointers3
+        mov     A,R0
+        cja     A,#0A8h,SBAprint_value
+        dec     A
+        rr      A
+        rr      A
+        rr      A
+        anl     A,#111b
+        movc    A,@A+DPTR
+        mov     DPTR,#reg_strings3
+        jmp     PrintReg
+
+SBAprint_value:
+;-------------------------
+;simply print value in ACC
+;-------------------------
+        mov     A,R0
+        jmp     PutHex8
+
+
+ShowMCode:
+;==========================================================
+;Show machinecode of an instruction
+;==========================================================
+        pushw   DP
+        push    AR0
+        push    AR1
+
+        call    UAS_getsize             ;get instructionsize
+        mov     R0,A
+        rl      A
+        add     A,R0
+        mov     R1,A
+
+        movw    DP,cli_param1            ;show parameters
+SMC_showparams:
+        mov     A,#' '
+        call    PutChar
+        getxdata
+        call    PutHex8
+        djnz    R0,SMC_showparams
+        
+SMC_align:
+        mov     A,#' '                  ;align string
+        call    PutChar
+        inc     R1
+        cjne    R1,#11,SMC_align
+
+SMC_done:
+        pop     AR1
+        pop     AR0
+        popw    DP
+        ret
+
+
+;**********************************************************
+;**********************************************************
+;*****************  S U B R O U T I N E S *****************
+;**********************************************************
+;**********************************************************
+
+UAS_getnextbyte:
+;==========================================================
+;read a byte from current machinecode instruction
+;==========================================================
+        movw    DP,cli_param1
+        addwb   DP,R5
+        inc     R5
+        getxdata
+        ret
+
+UAS_skipinstruction:
+;==========================================================
+;Skip Instruction
+;==========================================================
+        call    UAS_getsize
+        addwacc cli_param1
+        ret
+
+UAS_getsize:
+;==========================================================
+;Get Instruction Length
+;==========================================================
+        push    AR0
+        pushw   DP
+        movw    DP,cli_param1
+        movx    A,@DPTR
+        mov     B,#4
+        div     AB
+        mov     DPTR,#UASgs_table
+        movc    A,@A+DPTR
+        mov     R0,B
+UASgs_getlen:
+        cjne    R0,#00,UASgs_shift
+        sjmp    UASgs_filterlen
+UASgs_shift:
+        rr      A
+        rr      a
+        dec     R0
+       sjmp   UASgs_getlen
+UASgs_filterlen:
+        anl     A,#3
+        popw    DP
+        pop     AR0
+        ret
+
+B0      EQU 0
+B1      EQU 2
+B2      EQU 4
+B3      EQU 6
+
+UASgs_table:
+        db 1 SHL B0 + 2 SHL B1 + 3 SHL B2 + 1 SHL B3        ;00
+        db 1 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 3 SHL B0 + 2 SHL B1 + 3 SHL B2 + 1 SHL B3        ;10
+        db 1 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 3 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3        ;20
+        db 2 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 3 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3        ;30
+        db 2 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 3 SHL B3        ;40
+        db 2 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3        
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 3 SHL B3        ;50
+        db 2 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 3 SHL B3        ;60
+        db 2 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 1 SHL B3        ;70
+        db 2 SHL B0 + 3 SHL B1 + 2 SHL B2 + 2 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 2 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 2 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 1 SHL B3        ;80
+        db 1 SHL B0 + 3 SHL B1 + 2 SHL B2 + 2 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 2 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 2 SHL B3
+        db 3 SHL B0 + 2 SHL B1 + 2 SHL B2 + 1 SHL B3        ;90
+        db 2 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 1 SHL B3        ;A0
+        db 1 SHL B0 + 1 SHL B1 + 2 SHL B2 + 2 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 2 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 2 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 1 SHL B3        ;B0
+        db 3 SHL B0 + 3 SHL B1 + 3 SHL B2 + 3 SHL B3
+        db 3 SHL B0 + 3 SHL B1 + 3 SHL B2 + 3 SHL B3
+        db 3 SHL B0 + 3 SHL B1 + 3 SHL B2 + 3 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 1 SHL B3        ;C0
+        db 1 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 1 SHL B3        ;D0
+        db 1 SHL B0 + 3 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 2 SHL B3
+        db 2 SHL B0 + 2 SHL B1 + 2 SHL B2 + 2 SHL B3
+        db 1 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3        ;E0
+        db 1 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3        ;F0
+        db 1 SHL B0 + 2 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+        db 1 SHL B0 + 1 SHL B1 + 1 SHL B2 + 1 SHL B3
+
+
+Opcode_Table:
+        db ED_VOID                     ;00
+        db ED_AJMP                     ;01
+        db ED_LJMP                     ;02
+        db ED_ACC                      ;03
+        db ED_ACC                      ;04
+        db ED_BYTE                     ;05
+        db ED_ATREG                    ;06-07
+        db ED_REG                      ;08-0F
+
+        db ED_BIT   + ES_SJMP          ;10
+        db ED_AJMP                     ;11
+        db ED_LJMP                     ;12
+        db ED_ACC                      ;13
+        db ED_ACC                      ;14
+        db ED_BYTE                     ;15
+        db ED_ATREG                    ;16-17
+        db ED_REG                      ;18-1F
+
+        db ED_BIT   + ES_SJMP          ;20
+        db ED_AJMP                     ;21
+        db ED_VOID                     ;22
+        db ED_ACC                      ;23
+        db ED_ACC   + ES_ABS           ;24
+        db ED_ACC   + ES_BYTE          ;25
+        db ED_ACC   + ES_ATREG         ;26-27
+        db ED_ACC   + ES_REG           ;28-2F
+
+        db ED_BIT   + ES_SJMP          ;30
+        db ED_AJMP                     ;31
+        db ED_VOID                     ;32
+        db ED_ACC                      ;33
+        db ED_ACC   + ES_ABS           ;34
+        db ED_ACC   + ES_BYTE          ;35
+        db ED_ACC   + ES_ATREG         ;36-37
+        db ED_ACC   + ES_REG           ;38-3F
+
+        db ED_SJMP                     ;40
+        db ED_AJMP                     ;41
+        db ED_BYTE  + ES_ACC           ;42
+        db ED_BYTE  + ES_ABS           ;43
+        db ED_ACC   + ES_ABS           ;44
+        db ED_ACC   + ES_BYTE          ;45
+        db ED_ACC   + ES_ATREG         ;46-47
+        db ED_ACC   + ES_REG           ;48-4F
+
+        db ED_SJMP                     ;50
+        db ED_AJMP                     ;51
+        db ED_BYTE  + ES_ACC           ;52
+        db ED_BYTE  + ES_ABS           ;53
+        db ED_ACC   + ES_ABS           ;54
+        db ED_ACC   + ES_BYTE          ;55
+        db ED_ACC   + ES_ATREG         ;56-57
+        db ED_ACC   + ES_REG           ;58-5F
+
+        db ED_SJMP                     ;60
+        db ED_AJMP                     ;61
+        db ED_BYTE  + ES_ACC           ;62
+        db ED_BYTE  + ES_ABS           ;63
+        db ED_ACC   + ES_ABS           ;64
+        db ED_ACC   + ES_BYTE          ;65
+        db ED_ACC   + ES_ATREG         ;66-67
+        db ED_ACC   + ES_REG           ;68-6F
+
+        db ED_SJMP                     ;70
+        db ED_AJMP                     ;71
+        db ED_BITC  + ES_BIT           ;72
+        db ED_ATAPTR                   ;73
+        db ED_ACC   + ES_ABS           ;74
+        db ED_BYTE  + ES_ABS           ;75
+        db ED_ATREG + ES_ABS           ;76-77
+        db ED_REG   + ES_ABS           ;78-7F
+
+        db ED_SJMP                     ;80
+        db ED_AJMP                     ;81
+        db ED_BITC  + ES_BIT           ;82
+        db ED_ACC   + ES_ATAPC         ;83
+        db ED_AB                       ;84
+        db ED_BYTE  + ES_BYTE          ;85
+        db ED_BYTE  + ES_ATREG         ;86-87
+        db ED_BYTE  + ES_REG           ;88-8F
+
+        db ED_DPTR  + ES_LABS          ;90
+        db ED_AJMP                     ;91
+        db ED_BIT   + ES_BITC          ;92
+        db ED_ACC   + ES_ATAPTR        ;93
+        db ED_ACC   + ES_ABS           ;94
+        db ED_ACC   + ES_BYTE          ;95
+        db ED_ACC   + ES_ATREG         ;96-97
+        db ED_ACC   + ES_REG           ;98-9F
+
+        db ED_BITC  + ES_NBIT          ;A0
+        db ED_AJMP                     ;A1
+        db ED_BITC  + ES_BIT           ;A2
+        db ED_DPTR                     ;A3
+        db ED_AB                       ;A4
+        db ED_VOID                     ;A5
+        db ED_ATREG + ES_BYTE          ;A6-A7
+        db ED_REG   + ES_BYTE          ;A8-AF
+
+        db ED_BITC  + ES_NBIT          ;B0
+        db ED_AJMP                     ;B1
+        db ED_BIT                      ;B2
+        db ED_BITC                     ;B3
+        db ED_ACC   + ES_ABSJMP        ;B4
+        db ED_ACC   + ES_BYTEJMP       ;B5
+        db ED_ATREG + ES_ABSJMP        ;B6-B7
+        db ED_REG   + ES_ABSJMP        ;B8-BF
+
+        db ED_BYTE                     ;C0
+        db ED_AJMP                     ;C1
+        db ED_BIT                      ;C2
+        db ED_BITC                     ;C3
+        db ED_ACC                      ;C4
+        db ED_ACC   + ES_BYTE          ;C5
+        db ED_ACC   + ES_ATREG         ;C6-C7
+        db ED_ACC   + ES_REG           ;C8-CF
+
+        db ED_BYTE                     ;D0
+        db ED_AJMP                     ;D1
+        db ED_BIT                      ;D2
+        db ED_BITC                     ;D3
+        db ED_ACC                      ;D4
+        db ED_BYTE  + ES_SJMP          ;D5
+        db ED_ACC   + ES_ATREG         ;D6-D7
+        db ED_REG   + ES_SJMP          ;D8-DF
+
+        db ED_ACC   + ES_ATDPTR        ;E0
+        db ED_AJMP                     ;E1
+        db ED_ACC   + ES_ATREG         ;E2
+        db ED_ACC   + ES_ATREG         ;E3
+        db ED_ACC                      ;E4
+        db ED_ACC   + ES_BYTE          ;E5
+        db ED_ACC   + ES_ATREG         ;E6-E7
+        db ED_ACC   + ES_REG           ;E8-EF
+
+        db ED_ATDPTR+ ES_ACC           ;F0
+        db ED_AJMP                     ;F1
+        db ED_ATREG + ES_ACC           ;F2
+        db ED_ATREG + ES_ACC           ;F3
+        db ED_ACC                      ;F4
+        db ED_BYTE  + ES_ACC           ;F5
+        db ED_ATREG + ES_ACC           ;F6-F7
+        db ED_REG   + ES_ACC           ;F8-FF
+
+
+Instr_Pointers:
+        db mn_nop-mn_strings           ;00
+        db mn_ajmp-mn_strings          ;01
+        db mn_ljmp-mn_strings          ;02
+        db mn_rr-mn_strings            ;03
+        db mn_inc-mn_strings           ;04
+        db mn_inc-mn_strings           ;05
+        db mn_inc-mn_strings           ;06-07
+        db mn_inc-mn_strings           ;08-0F
+
+        db mn_jbc-mn_strings           ;10
+        db mn_acall-mn_strings         ;11
+        db mn_lcall-mn_strings         ;12
+        db mn_rrc-mn_strings           ;13
+        db mn_dec-mn_strings           ;14
+        db mn_dec-mn_strings           ;15
+        db mn_dec-mn_strings           ;16-17
+        db mn_dec-mn_strings           ;18-1F
+
+        db mn_jb-mn_strings            ;20
+        db mn_ajmp-mn_strings          ;21
+        db mn_ret-mn_strings           ;22
+        db mn_rl-mn_strings            ;23
+        db mn_add-mn_strings           ;24
+        db mn_add-mn_strings           ;25
+        db mn_add-mn_strings           ;26-27
+        db mn_add-mn_strings           ;28-2F
+
+        db mn_jnb-mn_strings           ;30
+        db mn_acall-mn_strings         ;31
+        db mn_reti-mn_strings          ;32
+        db mn_rlc-mn_strings           ;33
+        db mn_addc-mn_strings          ;34
+        db mn_addc-mn_strings          ;35
+        db mn_addc-mn_strings          ;36-37
+        db mn_addc-mn_strings          ;38-3F
+
+        db mn_jc-mn_strings            ;40
+        db mn_ajmp-mn_strings          ;41
+        db mn_orl-mn_strings           ;42
+        db mn_orl-mn_strings           ;43
+        db mn_orl-mn_strings           ;44
+        db mn_orl-mn_strings           ;45
+        db mn_orl-mn_strings           ;46-47
+        db mn_orl-mn_strings           ;48-4F
+
+        db mn_jnc-mn_strings           ;50
+        db mn_acall-mn_strings         ;51
+        db mn_anl-mn_strings           ;52
+        db mn_anl-mn_strings           ;53
+        db mn_anl-mn_strings           ;54
+        db mn_anl-mn_strings           ;55  
+        db mn_anl-mn_strings           ;56-57
+        db mn_anl-mn_strings           ;58-5F
+
+
+        db mn_jz-mn_strings            ;60
+        db mn_ajmp-mn_strings          ;61
+        db mn_xrl-mn_strings           ;62
+        db mn_xrl-mn_strings           ;63
+        db mn_xrl-mn_strings           ;64
+        db mn_xrl-mn_strings           ;65
+        db mn_xrl-mn_strings           ;66-67
+        db mn_xrl-mn_strings           ;68-6F
+
+
+        db mn_jnz-mn_strings           ;70
+        db mn_acall-mn_strings         ;71
+        db mn_orl-mn_strings           ;72
+        db mn_jmp-mn_strings           ;73
+        db mn_mov-mn_strings           ;74
+        db mn_mov-mn_strings           ;75
+        db mn_mov-mn_strings           ;76-77
+        db mn_mov-mn_strings           ;78-7F
+
+        db mn_sjmp-mn_strings          ;80
+        db mn_ajmp-mn_strings          ;81
+        db mn_anl-mn_strings           ;82
+        db mn_movc-mn_strings          ;83
+        db mn_div-mn_strings           ;84
+        db mn_mov-mn_strings           ;85
+        db mn_mov-mn_strings           ;86-87
+        db mn_mov-mn_strings           ;88-8F
+
+        db mn_mov-mn_strings           ;90
+        db mn_acall-mn_strings         ;91
+        db mn_mov-mn_strings           ;92
+        db mn_movc-mn_strings          ;93
+        db mn_subb-mn_strings          ;94
+        db mn_subb-mn_strings          ;95
+        db mn_subb-mn_strings          ;96-97
+        db mn_subb-mn_strings          ;98-9F
+                                          
+        db mn_orl-mn_strings           ;A0
+        db mn_ajmp-mn_strings          ;A1
+        db mn_mov-mn_strings           ;A2
+        db mn_inc-mn_strings           ;A3
+        db mn_mul-mn_strings           ;A4
+        db mn_reserved-mn_strings      ;A5
+        db mn_mov-mn_strings           ;A6-A7
+        db mn_mov-mn_strings           ;A8-AF
+
+        db mn_anl-mn_strings           ;B0
+        db mn_acall-mn_strings         ;B1
+        db mn_cpl-mn_strings           ;B2
+        db mn_cpl-mn_strings           ;B3
+        db mn_cjne-mn_strings          ;B4
+        db mn_cjne-mn_strings          ;B5
+        db mn_cjne-mn_strings          ;B6-B7
+        db mn_cjne-mn_strings          ;B8-BF
+
+        db mn_push-mn_strings          ;C0
+        db mn_ajmp-mn_strings          ;C1
+        db mn_clr-mn_strings           ;C2
+        db mn_clr-mn_strings           ;C3
+        db mn_swap-mn_strings          ;C4
+        db mn_xch-mn_strings           ;C5
+        db mn_xch-mn_strings           ;C6-C7
+        db mn_xch-mn_strings           ;C8-CF
+
+        db mn_pop-mn_strings           ;D0
+        db mn_acall-mn_strings         ;D1
+        db mn_setb-mn_strings          ;D2
+        db mn_setb-mn_strings          ;D3
+        db mn_da-mn_strings            ;D4
+        db mn_djnz-mn_strings          ;D5
+        db mn_xchd-mn_strings          ;D6-D7
+        db mn_djnz-mn_strings          ;D8-DF
+
+        db mn_movx-mn_strings          ;E0
+        db mn_ajmp-mn_strings          ;E1
+        db mn_movx-mn_strings          ;E2
+        db mn_movx-mn_strings          ;E3
+        db mn_clr-mn_strings           ;E4
+        db mn_mov-mn_strings           ;E5
+        db mn_mov-mn_strings           ;E6-E7
+        db mn_mov-mn_strings           ;E8-EF
+
+        db mn_movx-mn_strings          ;F0
+        db mn_acall-mn_strings         ;F1
+        db mn_movx-mn_strings          ;F2
+        db mn_movx-mn_strings          ;F3
+        db mn_cpl-mn_strings           ;F4
+        db mn_mov-mn_strings           ;F5
+        db mn_mov-mn_strings           ;F6-F7
+        db mn_mov-mn_strings           ;F8-FF
+
+mn_strings:
+;==========================================================
+;strings of assembler instruction
+;==========================================================
+
+;mathematics
+;-----------
+mn_inc: db 'IN',('C'+128)
+mn_dec: db 'DE',('C'+128)
+mn_add: db 'AD',('D'+128)
+mn_addc:db 'ADD',('C'+128)
+mn_subb:db 'SUB',('B'+128)
+mn_mul: db 'MU',('L'+128)
+mn_div: db 'DI',('V'+128)
+mn_da:  db 'D',('A'+128)
+
+;boolean
+;-------
+mn_clr: db 'CL',('R'+128)
+mn_setb:db 'SET',('B'+128)
+mn_cpl: db 'CP',('L'+128)
+mn_anl: db 'AN',('L'+128)
+mn_orl: db 'OR',('L'+128)
+mn_xrl: db 'XR',('L'+128)
+mn_rl:  db 'R',('L'+128)
+mn_rlc: db 'RL',('C'+128)
+mn_rr:  db 'R',('R'+128)
+mn_rrc: db 'RR',('C'+128)
+
+;data transfer
+;-------------
+mn_swap:db 'SWA',('P'+128)
+mn_mov: db 'MO',('V'+128)
+mn_movc:db 'MOV',('C'+128)
+mn_movx:db 'MOV',('X'+128)
+mn_push:db 'PUS',('H'+128)
+mn_pop: db 'PO',('P'+128)
+mn_xch: db 'XC',('H'+128)
+mn_xchd:db 'XCH',('D'+128)
+
+;branching
+;---------
+mn_jz:  db 'J',('Z'+128)
+mn_djnz:db 'D'
+mn_jnz: db 'JN',('Z'+128)
+mn_cjne:db 'CJN',('E'+128)
+mn_jc:  db 'J',('C'+128)
+mn_jnc: db 'JN',('C'+128)
+mn_jb:  db 'J',('B'+128)
+mn_jnb: db 'JN',('B'+128)
+mn_jbc: db 'JB',('C'+128)
+mn_acall:db 'ACAL',('L'+128)
+mn_lcall:db 'LCAL',('L'+128)
+mn_ajmp:db 'A'
+mn_jmp: db 'JM',('P'+128)
+mn_ljmp:db 'LJM',('P'+128)
+mn_sjmp:db 'SJM',('P'+128)
+mn_ret: db 'RE',('T'+128)
+mn_reti:db 'RET',('I'+128)
+
+;others
+;------
+mn_nop: db 'NO',('P'+128)
+mn_reserved:
+        db '??',('?'+128)
+
+Regname_Pointers0:
+        db reg_dpl-reg_strings0         ;82
+        db reg_dph-reg_strings0         ;83
+        db reg_gmod-reg_strings0        ;84
+        db reg_tfifo-reg_strings0       ;85
+        db reg_dcon0-reg_strings0       ;92
+        db reg_dcon1-reg_strings0       ;93
+        db reg_baud-reg_strings0        ;94
+        db reg_adr0-reg_strings0        ;95
+        db reg_sarl0-reg_strings0       ;A2
+        db reg_sarh0-reg_strings0       ;A3
+        db reg_ifs-reg_strings0         ;A4
+        db reg_adr1-reg_strings0        ;A5
+        db reg_sarl1-reg_strings0       ;B2
+        db reg_sarh1-reg_strings0       ;B3
+        db reg_slottm-reg_strings0      ;B4
+        db reg_adr2-reg_strings0        ;B5
+        db reg_darl0-reg_strings0       ;C2
+        db reg_darh0-reg_strings0       ;C3
+        db reg_bkoff-reg_strings0       ;C4
+        db reg_adr3-reg_strings0        ;C5
+        db reg_darl1-reg_strings0       ;D2
+        db reg_darh1-reg_strings0       ;D3
+        db reg_tcdcnt-reg_strings0      ;D4
+        db reg_amsk0-reg_strings0       ;D5
+        db reg_bcrl0-reg_strings0       ;E2
+        db reg_bcrh0-reg_strings0       ;E3
+        db reg_prbs-reg_strings0        ;E4
+        db reg_amsk1-reg_strings0       ;E5
+        db reg_bcrl1-reg_strings0       ;F2
+        db reg_bcrh1-reg_strings0       ;F3
+        db reg_rfifo-reg_strings0       ;F4
+        db reg_myslot-reg_strings0      ;F5
+
+reg_strings0:
+reg_dpl:   db 'DP',('L'+128)
+reg_dph:   db 'DP',('H'+128)
+reg_gmod:  db 'GMO',('D'+128)
+reg_tfifo: db 'TFIF',('O'+128)
+reg_dcon0: db 'DCON',('0'+128)
+reg_dcon1: db 'DCON',('1'+128)
+reg_baud:  db 'BAU',('D'+128)
+reg_adr0:  db 'ADR',('0'+128)
+reg_sarl0: db 'SARL',('0'+128)
+reg_sarh0: db 'SARH',('0'+128)
+reg_ifs:   db 'IF',('S'+128)
+reg_adr1:  db 'ADR',('1'+128)
+reg_sarl1: db 'SARL',('1'+128)
+reg_sarh1: db 'SARH',('1'+128)
+reg_slottm:db 'SLOTT',('M'+128)
+reg_adr2:  db 'ADR',('2'+128)
+reg_darl0: db 'DARL',('0'+128)
+reg_darh0: db 'DARH',('0'+128)
+reg_bkoff: db 'BKOF',('F'+128)
+reg_adr3:  db 'ADR',('3'+128)
+reg_darl1: db 'DARL',('1'+128)
+reg_darh1: db 'DARH',('1'+128)
+reg_tcdcnt:db 'TCDCN',('T'+128)
+reg_amsk0: db 'AMSK',('0'+128)
+reg_bcrl0: db 'BCRL',('0'+128)
+reg_bcrh0: db 'BCRH',('0'+128)
+reg_prbs:  db 'PRB',('S'+128)
+reg_amsk1: db 'AMSK',('1'+128)
+reg_bcrl1: db 'BCRL',('1'+128)
+reg_bcrh1: db 'BCRH',('1'+128)
+reg_rfifo: db 'RFIF',('O'+128)
+reg_myslot:db 'MYSLO',('T'+128)
+
+
+Regname_Pointers1:
+        db reg_p0-reg_strings1          ;80
+        db reg_tcon-reg_strings1        ;88
+        db reg_p1-reg_strings1          ;90
+        db reg_scon-reg_strings1        ;98
+        db reg_p2-reg_strings1          ;A0
+        db reg_ie-reg_strings1          ;A8
+        db reg_p3-reg_strings1          ;B0
+        db reg_ip-reg_strings1          ;B8
+        db reg_p4-reg_strings1          ;C0
+        db reg_ien1-reg_strings1        ;C8
+        db reg_psw-reg_strings1         ;D0
+        db reg_tstat-reg_strings1       ;D8
+        db reg_acc-reg_strings1         ;E0
+        db reg_rstat-reg_strings1       ;E8
+        db reg_b-reg_strings1           ;F0
+        db reg_ipn1-reg_strings1        ;F8
+
+reg_strings1:
+reg_p0:       db 'P',('0'+128)
+reg_tcon:     db 'TCO',('N'+128)
+reg_p1:       db 'P',('1'+128)
+reg_scon:     db 'SCO',('N'+128)
+reg_p2:       db 'P',('2'+128)
+reg_ie:       db 'I',('E'+128)
+reg_p3:       db 'P',('3'+128)
+reg_ip:       db 'I',('P'+128)
+reg_p4:       db 'P',('4'+128)
+reg_ien1:     db 'IEN',('1'+128)
+reg_psw:      db 'PS',('W'+128)
+reg_tstat:    db 'TSTA',('T'+128)
+
+
+reg_acc:      db 'AC',('C'+128)
+reg_rstat:    db 'RSTA',('T'+128)
+reg_b:        db ('B'+128)
+reg_ipn1:     db 'IPN',('1'+128)
+
+
+Regname_Pointers2:
+        db reg_tl0-reg_strings2    
+        db reg_tl1-reg_strings2    
+        db reg_th0-reg_strings2    
+        db reg_th1-reg_strings2
+
+reg_strings2:
+reg_tl0:      db 'TL',('0'+128)
+reg_tl1:      db 'TL',('1'+128)
+reg_th0:      db 'TH',('0'+128)
+reg_th1:      db 'TH',('1'+128)
+
+
+Regname_Pointers3:
+        db reg_sp-reg_strings3          ;81
+        db reg_tmod-reg_strings3        ;89 
+        db reg_p5-reg_strings3          ;91
+        db reg_sbuf-reg_strings3        ;99   
+        db reg_p6-reg_strings3          ;A1
+
+reg_strings3:
+reg_sp:       db 'S',('P'+128)
+reg_tmod:     db 'TMO',('D'+128)
+reg_p5:       db 'P',('5'+128)
+reg_sbuf:     db 'SBU',('F'+128)
+reg_p6:       db 'P',('6'+128)
+
+reg_pcon:     db 'PCO',('N'+128)
+
+bitname_pointers1:
+        db bit_it0-bit_strings1         ;80
+        db bit_ie0-bit_strings1
+        db bit_it1-bit_strings1
+        db bit_ie1-bit_strings1
+        db bit_tr0-bit_strings1
+        db bit_tf0-bit_strings1
+        db bit_tr1-bit_strings1
+        db bit_tf1-bit_strings1
+
+        db bit_ri-bit_strings1          ;88
+        db bit_ti-bit_strings1
+        db bit_rb8-bit_strings1
+        db bit_tb8-bit_strings1
+        db bit_ren-bit_strings1
+        db bit_sm2-bit_strings1
+        db bit_sm1-bit_strings1
+        db bit_sm0-bit_strings1
+
+        db bit_ex0-bit_strings1         ;90
+        db bit_et0-bit_strings1
+        db bit_ex1-bit_strings1
+        db bit_et1-bit_strings1
+        db bit_es-bit_strings1
+        db 0
+        db 0
+        db bit_ea-bit_strings1
+
+        db bit_px0-bit_strings1         ;98
+        db bit_pt0-bit_strings1
+        db bit_px1-bit_strings1
+        db bit_pt1-bit_strings1
+        db bit_ps-bit_strings1
+        db 0
+        db 0
+        db 0
+
+        db bit_egsrv-bit_strings1       ;A0
+        db bit_egsre-bit_strings1
+        db bit_edma0-bit_strings1
+        db bit_egstv-bit_strings1
+        db bit_edma1-bit_strings1
+        db bit_egste-bit_strings1
+        db 0
+        db 0
+
+        db bit_dma-bit_strings1         ;A8
+        db bit_ten-bit_strings1
+        db bit_tfnf-bit_strings1
+        db bit_tdn-bit_strings1
+        db bit_tcdt-bit_strings1
+        db bit_ur-bit_strings1
+        db bit_noack-bit_strings1
+        db bit_lni-bit_strings1
+
+        db bit_haben-bit_strings1       ;B0
+        db bit_gren-bit_strings1
+        db bit_rfne-bit_strings1
+        db bit_rdn-bit_strings1
+        db bit_crce-bit_strings1
+        db bit_ae-bit_strings1
+        db bit_rcabt-bit_strings1
+        db bit_ovr-bit_strings1
+
+        db bit_pgsrv-bit_strings1       ;B8
+        db bit_pgsre-bit_strings1
+        db bit_pdma0-bit_strings1
+        db bit_pgstv-bit_strings1
+        db bit_pdma1-bit_strings1
+        db bit_pgste-bit_strings1
+        db 0
+        db 0
+
+bit_strings1:   db 128
+bit_it0:        db 'IT',('0'+128)      ;TCON.0
+bit_ie0:        db 'IE',('0'+128)      ;TCON.1
+bit_it1:        db 'IT',('1'+128)      ;TCON.2
+bit_ie1:        db 'IE',('1'+128)      ;TCON.3
+bit_tr0:        db 'TR',('0'+128)      ;TCON.4
+bit_tf0:        db 'TF',('0'+128)      ;TCON.5
+bit_tr1:        db 'TR',('1'+128)      ;TCON.6
+bit_tf1:        db 'TF',('1'+128)      ;TCON.7
+
+bit_ri:         db 'R',('I'+128)       ;SCON.0
+bit_ti:         db 'T',('I'+128)       ;SCON.1
+bit_rb8:        db 'RB',('8'+128)      ;SCON.2
+bit_tb8:        db 'TB',('8'+128)      ;SCON.3
+bit_ren:        db 'RE',('N'+128)      ;SCON.4
+bit_sm2:        db 'SM',('2'+128)      ;SCON.5
+bit_sm1:        db 'SM',('1'+128)      ;SCON.6
+bit_sm0:        db 'SM',('0'+128)      ;SCON.7
+
+bit_ex0:        db 'EX',('0'+128)      ;IE.0
+bit_et0:        db 'ET',('0'+128)      ;IE.1
+bit_ex1:        db 'EX',('1'+128)      ;IE.2
+bit_et1:        db 'ET',('1'+128)      ;IE.3
+bit_es:         db 'E',('S'+128)       ;IE.4
+bit_ea:         db 'E',('A'+128)       ;IE.7
+
+bit_px0:        db 'PX',('0'+128)      ;IP.0
+bit_pt0:        db 'PT',('0'+128)      ;IP.1
+bit_px1:        db 'PX',('1'+128)      ;IP.2
+bit_pt1:        db 'PT',('1'+128)      ;IP.3
+bit_ps:         db 'P',('S'+128)       ;IP.4
+
+bit_egsrv:      db 'EGSR',('V'+128)    ;IEN1.0
+bit_egsre:      db 'EGSR',('E'+128)    ;IEN1.1
+bit_edma0:      db 'EDMA',('0'+128)    ;IEN1.2
+bit_egstv:      db 'EGST',('V'+128)    ;IEN1.3
+bit_edma1:      db 'EDMA',('1'+128)    ;IEN1.5
+bit_egste:      db 'EGST',('E'+128)    ;IEN1.4
+
+bit_dma:        db 'DM',('A'+128)      ;TSTAT.0
+bit_ten:        db 'TE',('N'+128)      ;TSTAT.1
+bit_tfnf:       db 'TFN',('F'+128)     ;TSTAT.2
+bit_tdn:        db 'TD',('N'+128)      ;TSTAT.3
+bit_tcdt:       db 'TCD',('T'+128)     ;TSTAT.4
+bit_ur:         db 'U',('R'+128)       ;TSTAT.5
+bit_noack:      db 'NOAC',('K'+128)    ;TSTAT.6
+bit_lni:        db 'LN',('I'+128)      ;TSTAT.7
+
+bit_haben:      db 'HABE',('N'+128)    ;RSTAT.0
+bit_gren:       db 'GRE',('N'+128)     ;RSTAT.1
+bit_rfne:       db 'RFN',('E'+128)     ;RSTAT.2
+bit_rdn:        db 'RD',('N'+128)      ;RSTAT.3
+bit_crce:       db 'CRC',('E'+128)     ;RSTAT.4
+bit_ae:         db 'A',('E'+128)       ;RSTAT.5
+bit_rcabt:      db 'RCAB',('T'+128)    ;RSTAT.6
+bit_ovr:        db 'OV',('R'+128)      ;RSTAT.7
+
+bit_pgsrv:      db 'PGSR',('V'+128)    ;IPN1.0
+bit_pgsre:      db 'PGSR',('E'+128)    ;IPN1.1
+bit_pdma0:      db 'PDMA',('0'+128)    ;IPN1.2
+bit_pgstv:      db 'PGST',('V'+128)    ;IPN1.3
+bit_pdma1:      db 'PDMA',('1'+128)    ;IPN1.5
+bit_pgste:      db 'PGST',('E'+128)    ;IPN1.4
+
+bitname_pointers2:
+        db 0,0,0,0,0,0,0,0              ;C0
+        db bit_grxd-bit_strings2        ;C8
+        db bit_gtxd-bit_strings2
+        db bit_den-bit_strings2
+        db bit_txc-bit_strings2
+        db bit_rxc-bit_strings2
+        db bit_hld-bit_strings2
+        db bit_hlda-bit_strings2
+        db 0
+        db 0,0,0,0,0,0,0,0              ;D0
+        db bit_rxd-bit_strings2         ;D8
+        db bit_txd-bit_strings2
+        db bit_int0-bit_strings2
+        db bit_int1-bit_strings2
+        db bit_t0-bit_strings2
+        db bit_t1-bit_strings2
+        db bit_wr-bit_strings2
+        db bit_rd-bit_strings2
+        db 0,0,0,0,0,0,0,0              ;E0
+        db bit_p-bit_strings2           ;E8
+        db 0
+        db bit_ov-bit_strings2
+        db bit_rs0-bit_strings2
+        db bit_rs1-bit_strings2
+        db bit_f0-bit_strings2
+        db bit_ac-bit_strings2
+        db bit_cy-bit_strings2
+        db 0,0,0,0,0,0,0,0              ;F0
+        db 0,0,0,0,0,0,0,0              ;F8
+
+
+bit_strings2:   db 128
+bit_rxd:        db 'RX',('D'+128)       ;P3.0
+bit_txd:        db 'TX',('D'+128)       ;P3.1
+bit_int0:       db 'INT',('0'+128)      ;P3.2
+bit_int1:       db 'INT',('1'+128)      ;P3.3
+bit_t0:         db 'T',('0'+128)        ;P3.4
+bit_t1:         db 'T',('1'+128)        ;P3.5
+bit_wr:         db 'W',('R'+128)        ;P3.6
+bit_rd:         db 'R',('D'+128)        ;P3.7
+
+bit_grxd:       db 'GRX',('D'+128)      ;P1.0
+bit_gtxd:       db 'GTX',('D'+128)      ;P1.1
+bit_den:        db 'DE',('N'+128)       ;P1.2
+bit_txc:        db 'TX',('C'+128)       ;P1.3
+bit_rxc:        db 'RX',('C'+128)       ;P1.4
+bit_hld:        db 'HL',('D'+128)       ;P1.5
+bit_hlda:       db 'HLD',('A'+128)      ;P1.6
+
+bit_p:          db ('P'+128)            ;PSW.0
+bit_ov:         db 'O',('V'+128)        ;PSW.2
+bit_rs0:        db 'RS',('0'+128)       ;PSW.3
+bit_rs1:        db 'RS',('1'+128)       ;PSW.4
+bit_f0:         db 'F',('0'+128)        ;PSW.5
+bit_ac:         db 'A',('C'+128)        ;PSW.6
+bit_cy:         db 'C',('Y'+128)        ;PSW.7
+

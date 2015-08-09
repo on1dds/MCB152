@@ -1,0 +1,109 @@
+;Debugger() is a hidden module of the bootstrap loader. It contains
+;a Monitor() and a Disasm() function. Commandline interpreting is performed
+;in this main part.  All commands take only a beginaddress as parameter.
+;When no parameter is given, the contents after the last functioncall
+;is preserved.
+
+
+Debugger:
+;==========================================================
+;debugging tools from command line
+;==========================================================
+        call    PutCRLF
+        mov     A,#':'
+        call    PutChar
+
+db_getcmd:
+        call    GetChar                     ;get debug command
+        call    PutChar
+        mov     DebugEntry,A
+        cje     A,#SPACE,db_processcmd
+        cje     A,#CR,db_processcmd
+        mov     DebugCmd,A
+
+
+db_processcmd:
+        pushret Debugger
+        mov     A,DebugCmd
+
+        cje     A,#SPACE,DB_done
+        cje     A,#CR,DB_done
+        cje     A,#'h',DebugHelp             ;Help
+        cje     A,#'H',DebugHelp
+        cje     A,#'?',DebugHelp
+        cje     A,#'d',Disasm                ;Disassemble
+        cje     A,#'D',Disasm
+        cje     A,#'m',Monitor               ;Monitor
+        cje     A,#'M',Monitor
+        cje     A,#'g',GoRoutine             ;Go
+        cje     A,#'G',GoRoutine
+        cje     A,#'q',DB_Quit               ;Quit debugger (warmreboot)
+        cje     A,#'Q',DB_Quit
+        call    PutCRLF
+        printf  '???'                  ;Unknown command
+        call    PutCRLF
+
+DB_done:
+       ret
+
+
+DebugHelp:
+;==========================================================
+;help page for this debugger
+;==========================================================
+        call    GetHex16
+        mov     DPTR,#dbhelp_text
+        call    PutMessage
+        ret
+       
+
+dbhelp_text:
+        db CR,LF
+        db 'DEBUGHELP',CR,LF
+        db '---------',CR,LF
+        db '?,H             this page',CR,LF
+        db 'D <address>     disassemble ',CR,LF
+        db 'G <address>     go address (beware, no trace mode!)',CR,LF
+        db 'M <address>     monitor ASCII-dump',CR,LF
+        db 'Q               leave debugger (warmreboot MCB152)',CR,LF
+        db 0
+
+
+GoRoutine:
+;==========================================================
+;call routine on specified address
+;==========================================================
+        call    GetHex16      ;UNTESTED !!!
+        jc      GR_done
+        pushret GR_done
+        pushret CallDRAM
+        pushret Address1
+        ljmp    CallDRAM
+
+GR_done:
+        ret
+
+DB_Quit:
+;==========================================================
+;leave debugger and warmreboot
+;==========================================================
+        printf  'Rebooting...'
+        jmp     RESET
+
+ShowAddress:
+;==========================================================
+;show an address
+;==========================================================
+;DPTR  = addresspointer
+;----------------------------------------------------------
+        mov     A,#'>'
+        call    PutChar
+        call    PutAddress
+        mov     A,#':'
+        call    PutChar
+        mov     A,#' '
+        call    PutChar
+        ret
+
+
+
